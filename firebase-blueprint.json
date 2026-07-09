@@ -1,0 +1,149 @@
+{
+  "entities": {
+    "product": {
+      "title": "Product",
+      "description": "SmartPOS product structure",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "category": { "type": "string" },
+        "price": { "type": "number" },
+        "cost": { "type": "number" },
+        "stock": { "type": "number" },
+        "minStock": { "type": "number" },
+        "image": { "type": "string" }
+      },
+      "required": ["id", "name", "category", "price", "cost", "stock"]
+    },
+    "client": {
+      "title": "Client",
+      "description": "Client profile with credit line info",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "email": { "type": "string" },
+        "balance": { "type": "number" },
+        "creditLimit": { "type": "number" },
+        "facialTemplate": { "type": "string" }
+      },
+      "required": ["id", "name", "balance", "creditLimit"]
+    },
+    "transaction": {
+      "title": "Transaction",
+      "description": "Sales and payment transaction records",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "clientId": { "type": "string" },
+        "clientName": { "type": "string" },
+        "items": { "type": "array" },
+        "total": { "type": "number" },
+        "paymentMethod": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "status": { "type": "string" }
+      },
+      "required": ["id", "items", "total", "paymentMethod", "timestamp", "status"]
+    },
+    "backupHistory": {
+      "title": "Backup History",
+      "description": "Manual and automatic backup execution history",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "status": { "type": "string" },
+        "size": { "type": "string" }
+      },
+      "required": ["id", "timestamp", "status", "size"]
+    },
+    "supportTicket": {
+      "title": "Support Ticket",
+      "description": "Customer support requests",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "status": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "priority": { "type": "string" }
+      },
+      "required": ["id", "title", "description", "status", "timestamp", "priority"]
+    },
+    "notificationLog": {
+      "title": "Notification Log",
+      "description": "Logs of notifications sent to users",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "clientId": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "type": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "status": { "type": "string" }
+      },
+      "required": ["id", "title", "message", "timestamp", "status"]
+    },
+    "setting": {
+      "title": "Setting",
+      "description": "App settings like pix keys",
+      "type": "object",
+      "properties": {
+        "key": { "type": "string" }
+      },
+      "required": ["key"]
+    },
+    "appUser": {
+      "title": "AppUser",
+      "description": "System user profiles",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "username": { "type": "string" },
+        "name": { "type": "string" },
+        "role": { "type": "string" },
+        "passwordHash": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "username", "name", "role", "passwordHash", "createdAt"]
+    }
+  },
+  "firestore": {
+    "users/{id}": {
+      "schema": "appUser",
+      "description": "Collection of system operators and administrators"
+    },
+    "products/{id}": {
+      "schema": "product",
+      "description": "Collection of all canteen products"
+    },
+    "clients/{id}": {
+      "schema": "client",
+      "description": "Collection of registered clients and their balances"
+    },
+    "transactions/{id}": {
+      "schema": "transaction",
+      "description": "Collection of all sales and credit transactions"
+    },
+    "backups/{id}": {
+      "schema": "backupHistory",
+      "description": "Backup logs"
+    },
+    "tickets/{id}": {
+      "schema": "supportTicket",
+      "description": "Canteen support tickets"
+    },
+    "notifications/{id}": {
+      "schema": "notificationLog",
+      "description": "Stored broadcast notification records"
+    },
+    "settings/{id}": {
+      "schema": "setting",
+      "description": "Configuration settings like active Pix key"
+    }
+  }
+}

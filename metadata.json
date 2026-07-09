@@ -1,0 +1,10 @@
+{
+  "name": "PDV de Cantina",
+  "description": "Sistema completo de vendas PDV para cantinas escolar/corporativa com controle de saldo devedor, pagamentos (inclusive Pix e prazo), relatórios detalhados, recarga de saldo, simulação de biometria, cobrança por WhatsApp e portal mobile do usuário.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
