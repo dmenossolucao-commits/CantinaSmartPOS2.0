@@ -759,7 +759,7 @@ export default function OutstandingAccounts({
                       <img
                         src={getPixQRCodeUrl(generatePixPayload(pixKey, Math.abs(billingModalClient.balance)))}
                         alt="Pix Cobrança QR Code"
-                        className="w-24 h-24 object-contain mx-auto"
+                        className="w-36 h-36 object-contain mx-auto"
                         referrerPolicy="no-referrer"
                       />
                     </div>

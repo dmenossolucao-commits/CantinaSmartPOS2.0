@@ -240,7 +240,7 @@ export default function ClientManager({
       `---------------------------------\n` +
       (itemsText ? itemsText + `---------------------------------\n` : '') +
       `Chave Pix: *pix@udvcantina.com*\n\n` +
-      `_(O extrato detalhado em formato de imagem PNG foi gerado no seu dispositivo. Por favor, envie o comprovante por aqui. Obrigado! 😊)_`;
+      `Por favor, envie o comprovante de pagamento por aqui. Obrigado! 😊`;
 
     return `https://api.whatsapp.com/send?phone=${client.phone.replace(/[^0-9]/g, '')}&text=${encodeURIComponent(text)}`;
   };
@@ -453,28 +453,6 @@ export default function ClientManager({
                   <button
                     id={`whatsapp-charge-btn-${activeClient.id}`}
                     onClick={() => {
-                      const recentTxs = clientTransactions.filter(tx => tx.paymentMethod === 'prazo');
-                      const itemsToDraw = recentTxs.flatMap(tx => tx.items.map(item => ({
-                        name: item.productName,
-                        qty: item.quantity,
-                        price: item.price
-                      })));
-
-                      downloadReceiptAsPNG(
-                        'Cantina UDV',
-                        'Extrato de Débito',
-                        new Date().toLocaleString('pt-BR'),
-                        itemsToDraw,
-                        Math.abs(activeClient.balance),
-                        'Prazo (Carteira)',
-                        [
-                          `Cliente: ${activeClient.name}`,
-                          `Chave Pix: pix@udvcantina.com`,
-                          `Status: Saldo Pendente`
-                        ],
-                        `extrato_${activeClient.id}.png`
-                      );
-
                       const link = getWhatsAppBillingLink(activeClient);
                       window.open(link, '_blank');
                     }}

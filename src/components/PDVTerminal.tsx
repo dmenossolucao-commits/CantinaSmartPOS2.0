@@ -90,30 +90,7 @@ export default function PDVTerminal({
   const [newClientType, setNewClientType] = useState<'aluno' | 'colaborador'>('aluno');
   const [newClientLimit, setNewClientLimit] = useState('150.00');
 
-  // Prazo de Pagamento State (deadline for deferred purchase)
-  const [deadlineType, setDeadlineType] = useState<'7' | '15' | '30' | '45' | 'custom'>('15');
-  const [customDeadlineDate, setCustomDeadlineDate] = useState<string>(() => {
-    const d = new Date();
-    d.setDate(d.getDate() + 15);
-    return d.toISOString().split('T')[0];
-  });
-
   const categories = ['Todos', 'Salgados', 'Bebidas', 'Doces', 'Almoço', 'Outros'];
-
-  // Calculate due date based on chosen deadline type
-  const calculatedDueDate = useMemo(() => {
-    if (deadlineType === 'custom') {
-      return new Date(customDeadlineDate + 'T23:59:59');
-    }
-    const days = parseInt(deadlineType);
-    const d = new Date();
-    d.setDate(d.getDate() + days);
-    return d;
-  }, [deadlineType, customDeadlineDate]);
-
-  const formattedDueDateString = useMemo(() => {
-    return calculatedDueDate.toLocaleDateString('pt-BR');
-  }, [calculatedDueDate]);
 
   // Filter products
   const filteredProducts = useMemo(() => {
@@ -299,7 +276,6 @@ export default function PDVTerminal({
     setCashReceived('');
     setCompletedTransaction(null);
     setShowQuickRegister(false);
-    setDeadlineType('15');
     setIsCartDrawerOpen(false);
   };
 
@@ -365,12 +341,10 @@ export default function PDVTerminal({
         text += `*Saldo Devedor Anterior:* R$ ${prevDebt.toFixed(2)}\n`;
       }
       const clientNewBalance = client.balance - tx.total;
-      text += `*Vencimento:* ${formattedDueDateString}\n`;
       text += `*Novo Saldo Devedor:* R$ ${Math.abs(clientNewBalance).toFixed(2)}\n`;
     }
     text += `---------------------------------\n\n`;
-    text += `Agradecemos a preferência! 😊✨\n\n`;
-    text += `_(O recibo detalhado em formato de imagem PNG foi baixado no seu dispositivo. Você pode anexar a imagem junto a esta mensagem!)_`;
+    text += `Agradecemos a preferência! 🌙☀️🌟`;
 
     return `https://api.whatsapp.com/send?phone=${client.phone.replace(/[^0-9]/g, '')}&text=${encodeURIComponent(text)}`;
   };
@@ -1256,7 +1230,7 @@ export default function PDVTerminal({
                             <img
                               src={qrUrl}
                               alt="Pix QR Code"
-                              className="w-28 h-28 rounded-xl object-contain"
+                              className="w-36 h-36 rounded-xl object-contain"
                               referrerPolicy="no-referrer"
                             />
                           </div>
@@ -1313,13 +1287,13 @@ export default function PDVTerminal({
                     {/* 3. COMPRA A PRAZO BALANCE PREVIEW */}
                     {paymentMethod === 'prazo' && selectedClient && (
                       <div className="bg-amber-50/50 border border-amber-200 rounded-xl p-3 space-y-2 text-xs">
-                        <div className="flex justify-between">
-                          <span className="text-gray-600">Prazo de Pagamento:</span>
-                          <span className="font-bold text-amber-800">{deadlineType === 'custom' ? 'Personalizado' : `${deadlineType} Dias`}</span>
+                        <div className="flex justify-between text-gray-600">
+                          <span>Saldo Devedor Atual:</span>
+                          <span>R$ {selectedClient.balance < 0 ? Math.abs(selectedClient.balance).toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : '0,00'}</span>
                         </div>
-                        <div className="flex justify-between">
-                          <span className="text-gray-600">Vencimento da Fatura:</span>
-                          <span className="font-bold text-amber-800 underline">{formattedDueDateString}</span>
+                        <div className="flex justify-between text-gray-600">
+                          <span>Valor desta compra:</span>
+                          <span>R$ {cartTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
                         </div>
                         <div className="border-t border-amber-100 pt-2 flex justify-between font-bold text-red-600">
                           <span>Novo Saldo Devedor estimado:</span>
@@ -1477,7 +1451,7 @@ export default function PDVTerminal({
                         <img
                           src={qrUrl}
                           alt="Pix QR Code"
-                          className="w-40 h-40 object-contain mx-auto"
+                          className="w-56 h-56 object-contain mx-auto animate-pulse"
                           referrerPolicy="no-referrer"
                         />
                       </div>
@@ -1584,9 +1558,6 @@ export default function PDVTerminal({
                         {selectedClient && (
                           <>
                             <p><strong>Cliente:</strong> {selectedClient.name}</p>
-                            {completedTransaction.paymentMethod === 'prazo' && (
-                              <p className="text-amber-700 font-bold"><strong>Vencimento:</strong> {formattedDueDateString}</p>
-                            )}
                           </>
                         )}
                       </div>
@@ -1599,9 +1570,6 @@ export default function PDVTerminal({
                         if (selectedClient) {
                           extra.push(`Cliente: ${selectedClient.name}`);
                           extra.push(`WhatsApp: ${selectedClient.phone}`);
-                        }
-                        if (completedTransaction.paymentMethod === 'prazo') {
-                          extra.push(`Vencimento: ${formattedDueDateString}`);
                         }
                         
                         downloadReceiptAsPNG(
@@ -1632,31 +1600,6 @@ export default function PDVTerminal({
                         <div className="flex gap-2">
                           <button
                             onClick={() => {
-                              const extra: string[] = [];
-                              if (selectedClient) {
-                                extra.push(`Cliente: ${selectedClient.name}`);
-                                extra.push(`WhatsApp: ${selectedClient.phone}`);
-                              }
-                              if (completedTransaction.paymentMethod === 'prazo') {
-                                extra.push(`Vencimento: ${formattedDueDateString}`);
-                              }
-                              
-                              downloadReceiptAsPNG(
-                                'Cantina UDV',
-                                'Cupom de Venda',
-                                new Date(completedTransaction.timestamp).toLocaleString('pt-BR'),
-                                completedTransaction.items.map(item => ({
-                                  name: item.productName,
-                                  qty: item.quantity,
-                                  price: item.price
-                                })),
-                                completedTransaction.total,
-                                methodLabel(completedTransaction.paymentMethod),
-                                extra,
-                                `recibo_venda_${completedTransaction.id}.png`
-                              );
-                              triggerPushNotification('Baixando Recibo', 'O recibo PNG está sendo gerado e baixado.', 'success');
-
                               const link = getWhatsAppReceiptLink(completedTransaction, selectedClient);
                               window.open(link, '_blank');
                             }}

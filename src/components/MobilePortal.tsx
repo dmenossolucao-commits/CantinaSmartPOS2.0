@@ -27,10 +27,16 @@ export default function MobilePortal({
   triggerPushNotification,
   pixKey
 }: MobilePortalProps) {
-  const [selectedUser, setSelectedUser] = useState<Client | null>(null);
+  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [pinCode, setPinCode] = useState('');
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [mobileTab, setMobileTab] = useState<'home' | 'statement' | 'pay_pix'>('home');
+
+  // Dynamically compute selectedUser to ensure it always uses the latest synchronized client details
+  const selectedUser = useMemo(() => {
+    if (!selectedUserId) return null;
+    return clients.find(c => c.id === selectedUserId) || null;
+  }, [selectedUserId, clients]);
 
   // Pix payment states
   const [pixAmount, setPixAmount] = useState('');
@@ -58,7 +64,7 @@ export default function MobilePortal({
 
   const handleLogout = () => {
     setIsAuthenticated(false);
-    setSelectedUser(null);
+    setSelectedUserId(null);
     setPinCode('');
     setShowPixResult(false);
     setMobileTab('home');
@@ -76,9 +82,6 @@ export default function MobilePortal({
     setIsProcessingPix(true);
     setTimeout(() => {
       onAddCredit(selectedUser.id, amt);
-      
-      // Update local state instance to reflect in UI immediately
-      setSelectedUser(prev => prev ? { ...prev, balance: prev.balance + amt } : null);
       
       setIsProcessingPix(false);
       setShowPixResult(true);
@@ -160,7 +163,7 @@ export default function MobilePortal({
                         key={c.id}
                         id={`mobile-user-profile-${c.id}`}
                         onClick={() => {
-                          setSelectedUser(c);
+                          setSelectedUserId(c.id);
                           setPinCode('');
                         }}
                         className="w-full text-left p-2.5 rounded-2xl bg-white/10 hover:bg-white/20 border border-white/5 flex items-center justify-between text-white transition-all group"
@@ -197,7 +200,7 @@ export default function MobilePortal({
                   <button 
                     id="mobile-back-to-profiles"
                     type="button" 
-                    onClick={() => setSelectedUser(null)} 
+                    onClick={() => setSelectedUserId(null)} 
                     className="self-start text-[10px] text-gray-400 hover:text-white flex items-center gap-1"
                   >
                     <ArrowLeft size={12} /> Voltar
@@ -440,7 +443,7 @@ export default function MobilePortal({
 
                           {amountVal > 0 && qrUrl && (
                             <div className="bg-white p-2.5 rounded-xl flex flex-col items-center space-y-2 shadow-md">
-                              <img src={qrUrl} alt="QR Code" className="w-20 h-20 object-contain" referrerPolicy="no-referrer" />
+                              <img src={qrUrl} alt="QR Code" className="w-32 h-32 object-contain" referrerPolicy="no-referrer" />
                               <div className="w-full space-y-1.5 text-left">
                                 <div className="flex items-center justify-between gap-1">
                                   <span className="text-[8px] text-gray-400 font-bold uppercase">Chave Pix:</span>

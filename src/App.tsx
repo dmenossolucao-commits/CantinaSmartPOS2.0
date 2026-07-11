@@ -455,11 +455,16 @@ export default function App() {
   };
 
   const handleClearTransactions = async () => {
+    const previousTransactions = [...transactions];
     try {
+      // Optimistically clear the local transactions state to trigger a full UI re-render instantly
+      setTransactions([]);
       await clearAllTransactionsInCloud(transactions);
       triggerPushNotification('Dados Resetados', 'O histórico de vendas do PDV foi limpo com sucesso.', 'warn');
     } catch (err) {
       console.error(err);
+      setTransactions(previousTransactions);
+      triggerPushNotification('Erro ao Limpar', 'Não foi possível limpar o histórico na nuvem.', 'warn');
     }
   };
 
@@ -471,11 +476,16 @@ export default function App() {
       return;
     }
 
+    const previousTransactions = [...transactions];
     try {
+      // Optimistically update the transaction status locally to cancelado to trigger immediate re-render
+      setTransactions(prev => prev.map(t => t.id === txId ? { ...t, status: 'cancelado' } : t));
       await cancelSaleInCloud(tx, products, clients);
       triggerPushNotification('Venda Cancelada', `Venda ${txId} de R$ ${tx.total.toFixed(2)} foi cancelada com sucesso. Estoque restabelecido!`, 'warn');
     } catch (err) {
       console.error(err);
+      setTransactions(previousTransactions);
+      triggerPushNotification('Erro ao Cancelar', 'Não foi possível cancelar a venda no banco de dados.', 'warn');
     }
   };
 
@@ -483,11 +493,16 @@ export default function App() {
     const tx = transactions.find(t => t.id === txId);
     if (!tx) return;
 
+    const previousTransactions = [...transactions];
     try {
+      // Optimistically filter out the deleted transaction from local state to trigger immediate re-render
+      setTransactions(prev => prev.filter(t => t.id !== txId));
       await deleteSaleInCloud(tx, products, clients);
       triggerPushNotification('Venda Excluída', `A venda ${txId} de R$ ${tx.total.toFixed(2)} foi excluída definitivamente do histórico.`, 'warn');
     } catch (err) {
       console.error(err);
+      setTransactions(previousTransactions);
+      triggerPushNotification('Erro ao Excluir', 'Não foi possível excluir a venda no banco de dados.', 'warn');
     }
   };
 

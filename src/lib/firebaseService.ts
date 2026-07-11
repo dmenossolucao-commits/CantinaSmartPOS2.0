@@ -18,8 +18,16 @@ export async function checkAndPopulateInitialData(
   localPixKey: string
 ) {
   try {
-    // 0. Users (seed admin if not present)
+    // 0. Fetch existing tables to determine if db is already in use
     const userSnap = await getDocs(collection(db, 'users'));
+    const prodSnap = await getDocs(collection(db, 'products'));
+    const clientSnap = await getDocs(collection(db, 'clients'));
+    const settingsSnap = await getDocs(collection(db, 'settings'));
+
+    const isSystemInitialized = settingsSnap.docs.some(doc => doc.id === 'system');
+    const isAnyDataPresent = !prodSnap.empty || !clientSnap.empty || isSystemInitialized;
+
+    // Seed default administrator user if not present
     const adminExists = userSnap.docs.some(doc => {
       const u = doc.data() as AppUser;
       return u.username === 'admin' || u.role === 'admin';
@@ -37,8 +45,19 @@ export async function checkAndPopulateInitialData(
       await setDoc(doc(db, 'users', adminUser.id), adminUser);
     }
 
+    if (isAnyDataPresent) {
+      console.log('Database already initialized. Skipping seeding.');
+      if (!isSystemInitialized) {
+        await setDoc(doc(db, 'settings', 'system'), {
+          key: 'system_initialized',
+          seeded: true,
+          seededAt: new Date().toISOString()
+        });
+      }
+      return;
+    }
+
     // 1. Products
-    const prodSnap = await getDocs(collection(db, 'products'));
     if (prodSnap.empty && localProducts.length > 0) {
       console.log('Populating initial products to Firestore cloud...');
       const batch = writeBatch(db);
@@ -49,7 +68,6 @@ export async function checkAndPopulateInitialData(
     }
 
     // 2. Clients
-    const clientSnap = await getDocs(collection(db, 'clients'));
     if (clientSnap.empty && localClients.length > 0) {
       console.log('Populating clients to Firestore cloud...');
       const batch = writeBatch(db);
@@ -111,10 +129,16 @@ export async function checkAndPopulateInitialData(
 
     // 7. Pix key settings
     const pixDoc = doc(db, 'settings', 'pix');
-    const settingsSnap = await getDocs(collection(db, 'settings'));
     if (settingsSnap.empty) {
       await setDoc(pixDoc, { key: localPixKey });
     }
+
+    // 8. Mark as seeded
+    await setDoc(doc(db, 'settings', 'system'), {
+      key: 'system_initialized',
+      seeded: true,
+      seededAt: new Date().toISOString()
+    });
   } catch (err) {
     console.error('Error migrating/initializing data to Firestore:', err);
   }
@@ -202,64 +226,87 @@ export async function zeroClientsInCloud(clients: Client[]) {
 
 // Cancel Sale Transaction
 export async function cancelSaleInCloud(tx: Transaction, products: Product[], clients: Client[]) {
-  const batch = writeBatch(db);
-
   // 1. Cancel transaction
-  batch.update(doc(db, 'transactions', tx.id), { status: 'cancelado' });
+  await updateDoc(doc(db, 'transactions', tx.id), { status: 'cancelado' });
 
-  // 2. Restore product stock
+  // 2. Restore product stock and revert balance
+  const promises: Promise<void>[] = [];
+
   tx.items.forEach(item => {
     const p = products.find(prod => prod.id === item.productId);
     if (p) {
-      batch.update(doc(db, 'products', p.id), { stock: p.stock + item.quantity });
+      promises.push(
+        updateDoc(doc(db, 'products', p.id), { stock: p.stock + item.quantity })
+          .catch(err => console.warn(`Could not restore stock for product ${p.id}:`, err))
+      );
     }
   });
 
-  // 3. Revert client balance if credit line (prazo)
   if (tx.clientId && tx.paymentMethod === 'prazo') {
     const c = clients.find(cl => cl.id === tx.clientId);
     if (c) {
-      batch.update(doc(db, 'clients', c.id), { balance: c.balance + tx.total });
+      promises.push(
+        updateDoc(doc(db, 'clients', c.id), { balance: c.balance + tx.total })
+          .catch(err => console.warn(`Could not revert balance for client ${c.id}:`, err))
+      );
     }
   }
 
-  await batch.commit();
+  if (promises.length > 0) {
+    await Promise.all(promises);
+  }
 }
 
 // Delete Sale Transaction permanently
 export async function deleteSaleInCloud(tx: Transaction, products: Product[], clients: Client[]) {
-  const batch = writeBatch(db);
-
-  // 1. Delete transaction
-  batch.delete(doc(db, 'transactions', tx.id));
+  // 1. Delete transaction first
+  await deleteDoc(doc(db, 'transactions', tx.id));
 
   // 2. Restore stock and revert balance only if not already cancelled
   if (tx.status !== 'cancelado') {
+    const promises: Promise<void>[] = [];
+    
     tx.items.forEach(item => {
       const p = products.find(prod => prod.id === item.productId);
       if (p) {
-        batch.update(doc(db, 'products', p.id), { stock: p.stock + item.quantity });
+        promises.push(
+          updateDoc(doc(db, 'products', p.id), { stock: p.stock + item.quantity })
+            .catch(err => console.warn(`Could not restore stock for product ${p.id}:`, err))
+        );
       }
     });
 
     if (tx.clientId && tx.paymentMethod === 'prazo') {
       const c = clients.find(cl => cl.id === tx.clientId);
       if (c) {
-        batch.update(doc(db, 'clients', c.id), { balance: c.balance + tx.total });
+        promises.push(
+          updateDoc(doc(db, 'clients', c.id), { balance: c.balance + tx.total })
+            .catch(err => console.warn(`Could not revert balance for client ${c.id}:`, err))
+        );
       }
     }
+    
+    if (promises.length > 0) {
+      await Promise.all(promises);
+    }
   }
-
-  await batch.commit();
 }
 
-// Clear transactions
+// Clear transactions with chunking to avoid Firestore 500-operation writeBatch limit
 export async function clearAllTransactionsInCloud(transactions: Transaction[]) {
-  const batch = writeBatch(db);
-  transactions.forEach(t => {
-    batch.delete(doc(db, 'transactions', t.id));
-  });
-  await batch.commit();
+  const chunk = <T>(arr: T[], size: number): T[][] => 
+    Array.from({ length: Math.ceil(arr.length / size) }, (v, i) =>
+      arr.slice(i * size, i * size + size)
+    );
+  
+  const chunks = chunk(transactions, 400);
+  for (const itemChunk of chunks) {
+    const batch = writeBatch(db);
+    itemChunk.forEach(t => {
+      batch.delete(doc(db, 'transactions', t.id));
+    });
+    await batch.commit();
+  }
 }
 
 // Mobile Portal: Balance Add Credit and Transaction
