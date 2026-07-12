@@ -3,6 +3,36 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+export interface Tenant {
+  id: string;
+  name: string;
+  cnpj?: string;
+  logoUrl?: string;
+  subdomain?: string;
+  isActive: boolean;
+  createdAt: string;
+  settings?: {
+    pixKey?: string;
+    creditLimitDefault?: number;
+    themeColor?: string;
+  };
+}
+
+export interface Company {
+  id: string;
+  name: string;
+  cnpj?: string;
+  logoUrl?: string;
+  subdomain?: string;
+  isActive: boolean;
+  createdAt: string;
+  settings?: {
+    pixKey?: string;
+    creditLimitDefault?: number;
+    themeColor?: string;
+  };
+}
+
 export interface Product {
   id: string;
   name: string;
@@ -11,6 +41,7 @@ export interface Product {
   stock: number;
   minStock: number;
   imageUrl?: string;
+  companyId?: string; // Multi-company architecture ready
 }
 
 export type PaymentMethod = 'dinheiro' | 'crédito' | 'débito' | 'pix' | 'prazo';
@@ -31,6 +62,7 @@ export interface Client {
   creditLimit: number; // Maximum debt allowed (e.g., R$ 150.00)
   biometricRegistered: boolean;
   biometricDataUrl?: string; // Mock biometric hash or face image representation
+  companyId?: string; // Multi-company architecture ready
 }
 
 export interface Transaction {
@@ -48,6 +80,7 @@ export interface Transaction {
   timestamp: string; // ISO String
   status: 'concluido' | 'pendente' | 'cancelado';
   dueDate?: string; // payment deadline for 'prazo'
+  companyId?: string; // Multi-company architecture ready
 }
 
 export interface NotificationLog {
@@ -59,6 +92,7 @@ export interface NotificationLog {
   message: string;
   timestamp: string;
   status: 'enviado' | 'pendente' | 'falha';
+  companyId?: string; // Multi-company architecture ready
 }
 
 export interface BackupHistory {
@@ -67,6 +101,7 @@ export interface BackupHistory {
   filename: string;
   status: 'sucesso' | 'falha';
   size: string;
+  companyId?: string; // Multi-company architecture ready
 }
 
 export interface SupportTicket {
@@ -77,6 +112,7 @@ export interface SupportTicket {
   category: 'sistema' | 'pagamentos' | 'biometria' | 'outros';
   timestamp: string;
   priority: 'baixa' | 'media' | 'alta';
+  companyId?: string; // Multi-company architecture ready
 }
 
 export interface AppUser {
@@ -86,5 +122,6 @@ export interface AppUser {
   role: 'admin' | 'operator';
   passwordHash: string; // Plain password or passcode for simplicity
   createdAt: string;
+  companyId?: string; // Multi-company architecture ready
 }
 

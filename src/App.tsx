@@ -24,8 +24,6 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 
 // Import Firebase config & Firestore handlers
-import { db } from './lib/firebase';
-import { collection, doc, onSnapshot } from 'firebase/firestore';
 import { 
   checkAndPopulateInitialData,
   saveProductInCloud,
@@ -45,7 +43,15 @@ import {
   clearAllTransactionsInCloud,
   mobileAddCreditInCloud,
   saveUserInCloud,
-  deleteUserInCloud
+  deleteUserInCloud,
+  subscribeUsers,
+  subscribeProducts,
+  subscribeClients,
+  subscribeTransactions,
+  subscribeBackups,
+  subscribeTickets,
+  subscribeNotifications,
+  subscribePixKey
 } from './lib/firebaseService';
 
 type ActiveTab = 'pdv' | 'clientes' | 'prazo' | 'historico' | 'cardapio' | 'admin' | 'mobile' | 'usuarios';
@@ -152,9 +158,7 @@ export default function App() {
         };
 
         // 2. Realtime subscription to cloud collections
-        const unsubUsers = onSnapshot(collection(db, 'users'), (snap) => {
-          const list: AppUser[] = [];
-          snap.forEach(doc => list.push(doc.data() as AppUser));
+        const unsubUsers = subscribeUsers((list) => {
           setUsers(list);
           if (loadedCount < totalCollections) checkLoadingHydration();
         }, (err) => {
@@ -162,9 +166,7 @@ export default function App() {
           if (loadedCount < totalCollections) checkLoadingHydration();
         });
 
-        const unsubProducts = onSnapshot(collection(db, 'products'), (snap) => {
-          const list: Product[] = [];
-          snap.forEach(doc => list.push(doc.data() as Product));
+        const unsubProducts = subscribeProducts((list) => {
           setProducts(list);
           if (loadedCount < totalCollections) checkLoadingHydration();
         }, (err) => {
@@ -172,9 +174,7 @@ export default function App() {
           if (loadedCount < totalCollections) checkLoadingHydration();
         });
 
-        const unsubClients = onSnapshot(collection(db, 'clients'), (snap) => {
-          const list: Client[] = [];
-          snap.forEach(doc => list.push(doc.data() as Client));
+        const unsubClients = subscribeClients((list) => {
           setClients(list);
           if (loadedCount < totalCollections) checkLoadingHydration();
         }, (err) => {
@@ -182,10 +182,7 @@ export default function App() {
           if (loadedCount < totalCollections) checkLoadingHydration();
         });
 
-        const unsubTransactions = onSnapshot(collection(db, 'transactions'), (snap) => {
-          const list: Transaction[] = [];
-          snap.forEach(doc => list.push(doc.data() as Transaction));
-          list.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+        const unsubTransactions = subscribeTransactions((list) => {
           setTransactions(list);
           if (loadedCount < totalCollections) checkLoadingHydration();
         }, (err) => {
@@ -193,10 +190,7 @@ export default function App() {
           if (loadedCount < totalCollections) checkLoadingHydration();
         });
 
-        const unsubBackups = onSnapshot(collection(db, 'backups'), (snap) => {
-          const list: BackupHistory[] = [];
-          snap.forEach(doc => list.push(doc.data() as BackupHistory));
-          list.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+        const unsubBackups = subscribeBackups((list) => {
           setBackups(list);
           if (loadedCount < totalCollections) checkLoadingHydration();
         }, (err) => {
@@ -204,10 +198,7 @@ export default function App() {
           if (loadedCount < totalCollections) checkLoadingHydration();
         });
 
-        const unsubTickets = onSnapshot(collection(db, 'tickets'), (snap) => {
-          const list: SupportTicket[] = [];
-          snap.forEach(doc => list.push(doc.data() as SupportTicket));
-          list.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+        const unsubTickets = subscribeTickets((list) => {
           setTickets(list);
           if (loadedCount < totalCollections) checkLoadingHydration();
         }, (err) => {
@@ -215,10 +206,7 @@ export default function App() {
           if (loadedCount < totalCollections) checkLoadingHydration();
         });
 
-        const unsubNotifications = onSnapshot(collection(db, 'notifications'), (snap) => {
-          const list: NotificationLog[] = [];
-          snap.forEach(doc => list.push(doc.data() as NotificationLog));
-          list.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+        const unsubNotifications = subscribeNotifications((list) => {
           setNotifications(list);
           if (loadedCount < totalCollections) checkLoadingHydration();
         }, (err) => {
@@ -226,10 +214,8 @@ export default function App() {
           if (loadedCount < totalCollections) checkLoadingHydration();
         });
 
-        const unsubPix = onSnapshot(doc(db, 'settings', 'pix'), (snap) => {
-          if (snap.exists()) {
-            setPixKey(snap.data().key);
-          }
+        const unsubPix = subscribePixKey((key) => {
+          setPixKey(key);
           if (loadedCount < totalCollections) checkLoadingHydration();
         }, (err) => {
           console.error('Error syncing settings:', err);
@@ -253,7 +239,7 @@ export default function App() {
     }
 
     setupCloudSync();
-  }, []);
+  }, [currentUser?.companyId]);
 
   // Push Alert Generator
   const triggerPushNotification = (title: string, body: string, type: 'info' | 'success' | 'warn' = 'success') => {
@@ -515,14 +501,21 @@ export default function App() {
   };
 
   const handleLogin = (u: AppUser) => {
-    setCurrentUser(u);
-    localStorage.setItem('udv_current_user', JSON.stringify(u));
+    const userCompanyId = u.companyId || 'default_udv_company';
+    const userWithCompany = { ...u, companyId: userCompanyId };
+    
+    // Set active tenant in local storage for both general and user specific checks
+    localStorage.setItem('udv_active_tenant_id', userCompanyId);
+    localStorage.setItem('udv_current_user', JSON.stringify(userWithCompany));
+    setCurrentUser(userWithCompany);
+    
     triggerPushNotification('Acesso Permitido', `Seja bem-vindo, ${u.name}!`, 'success');
   };
 
   const handleLogout = () => {
     setCurrentUser(null);
     localStorage.removeItem('udv_current_user');
+    localStorage.removeItem('udv_active_tenant_id');
     triggerPushNotification('Sessão Encerrada', 'Você saiu do sistema com segurança.', 'info');
   };
 

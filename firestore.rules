@@ -25,5 +25,8 @@ service cloud.firestore {
     match /users/{document} {
       allow read, write: if true;
     }
+    match /companies/{document} {
+      allow read, write: if true;
+    }
   }
 }
