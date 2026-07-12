@@ -110,12 +110,32 @@
         "createdAt": { "type": "string" }
       },
       "required": ["id", "username", "name", "role", "passwordHash", "createdAt"]
+    },
+    "company": {
+      "title": "Company",
+      "description": "Multi-tenant Company profile",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "cnpj": { "type": "string" },
+        "logoUrl": { "type": "string" },
+        "subdomain": { "type": "string" },
+        "isActive": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "settings": { "type": "object" }
+      },
+      "required": ["id", "name", "isActive", "createdAt"]
     }
   },
   "firestore": {
     "users/{id}": {
       "schema": "appUser",
       "description": "Collection of system operators and administrators"
+    },
+    "companies/{id}": {
+      "schema": "company",
+      "description": "Collection of all registered companies (tenants)"
     },
     "products/{id}": {
       "schema": "product",
