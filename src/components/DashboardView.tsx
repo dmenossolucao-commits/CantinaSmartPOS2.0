@@ -24,6 +24,8 @@ interface DashboardViewProps {
   onDeleteSale?: (txId: string) => void;
   pixKey: string;
   onUpdatePixKey: (newKey: string) => void;
+  onMarkNotificationAsRead?: (id: string) => void;
+  onMarkAllNotificationsAsRead?: () => void;
 }
 
 export default function DashboardView({
@@ -37,13 +39,16 @@ export default function DashboardView({
   onCancelSale,
   onDeleteSale,
   pixKey,
-  onUpdatePixKey
+  onUpdatePixKey,
+  onMarkNotificationAsRead,
+  onMarkAllNotificationsAsRead
 }: DashboardViewProps) {
   const [activeReportTab, setActiveReportTab] = useState<'semanal' | 'mensal' | 'devedores'>('semanal');
   const [backupLoading, setBackupLoading] = useState(false);
   const [txSearchTerm, setTxSearchTerm] = useState('');
   const [activeModalList, setActiveModalList] = useState<'debtors' | 'prepaid' | 'lowstock' | 'sales' | null>(null);
   const [tempPixKey, setTempPixKey] = useState(pixKey);
+  const [notifFilter, setNotifFilter] = useState<'todas' | 'não lidas' | 'lidas'>('todas');
 
   const filteredTransactions = useMemo(() => {
     if (!txSearchTerm.trim()) return transactions;
@@ -55,6 +60,14 @@ export default function DashboardView({
       t.items.some(i => i.productName.toLowerCase().includes(term))
     );
   }, [transactions, txSearchTerm]);
+
+  const filteredNotifications = useMemo(() => {
+    return notifications.filter(n => {
+      if (notifFilter === 'não lidas') return !n.read;
+      if (notifFilter === 'lidas') return !!n.read;
+      return true;
+    });
+  }, [notifications, notifFilter]);
 
   // Administrative stats calculations
   const stats = useMemo(() => {
@@ -646,28 +659,88 @@ export default function DashboardView({
           </div>
 
           <div className="p-5 flex-1 flex flex-col justify-between">
-            <div className="space-y-2 max-h-56 overflow-y-auto">
-              {notifications.length === 0 ? (
+            {/* Filter Tabs */}
+            <div className="flex gap-2 mb-3">
+              <button
+                onClick={() => setNotifFilter('todas')}
+                className={`py-1.5 px-3 rounded-full text-[10px] font-sans font-bold transition-all ${
+                  notifFilter === 'todas'
+                    ? 'bg-emerald-600 text-white shadow-sm'
+                    : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                }`}
+              >
+                Todas ({notifications.length})
+              </button>
+              <button
+                onClick={() => setNotifFilter('não lidas')}
+                className={`py-1.5 px-3 rounded-full text-[10px] font-sans font-bold transition-all ${
+                  notifFilter === 'não lidas'
+                    ? 'bg-amber-500 text-white shadow-sm'
+                    : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                }`}
+              >
+                Não Lidas ({notifications.filter(n => !n.read).length})
+              </button>
+              <button
+                onClick={() => setNotifFilter('lidas')}
+                className={`py-1.5 px-3 rounded-full text-[10px] font-sans font-bold transition-all ${
+                  notifFilter === 'lidas'
+                    ? 'bg-blue-600 text-white shadow-sm'
+                    : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                }`}
+              >
+                Lidas ({notifications.filter(n => n.read).length})
+              </button>
+            </div>
+
+            {/* Mark All as Read button */}
+            {notifications.some(n => !n.read) && onMarkAllNotificationsAsRead && (
+              <button
+                onClick={onMarkAllNotificationsAsRead}
+                className="mb-3 text-[10px] text-emerald-600 hover:text-emerald-700 font-sans font-bold flex items-center gap-1 self-start transition-colors"
+              >
+                <CheckCircle size={12} /> Marcar todas como lidas
+              </button>
+            )}
+
+            <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+              {filteredNotifications.length === 0 ? (
                 <div className="text-center py-10 text-xs text-gray-400 font-sans">
-                  Nenhuma notificação enviada hoje.
+                  Nenhuma notificação {notifFilter !== 'todas' ? `${notifFilter} ` : ''}encontrada.
                 </div>
               ) : (
-                notifications.slice().reverse().map(n => (
-                  <div key={n.id} className="p-2.5 border border-gray-100 rounded-lg bg-gray-50 flex justify-between gap-2.5 text-xs">
-                    <div className="min-w-0">
+                filteredNotifications.slice().reverse().map(n => (
+                  <div 
+                    key={n.id} 
+                    onClick={() => !n.read && onMarkNotificationAsRead && onMarkNotificationAsRead(n.id)}
+                    className={`p-3 border rounded-xl flex justify-between gap-3 text-xs transition-all ${
+                      n.read 
+                        ? 'border-gray-100 bg-gray-50/50 opacity-75' 
+                        : 'border-emerald-100 bg-emerald-50/40 shadow-sm hover:bg-emerald-50/70 cursor-pointer'
+                    }`}
+                  >
+                    <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-1.5">
-                        <span className="font-bold text-gray-800">{n.clientName.split(' ')[0]}</span>
-                        <span className="text-[9px] text-gray-400 font-mono">
+                        <span className="font-bold text-gray-900">{n.clientName}</span>
+                        {!n.read && (
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse shrink-0" />
+                        )}
+                        <span className="text-[10px] text-gray-400 font-mono">
                           {new Date(n.timestamp).toLocaleTimeString('pt-BR')}
                         </span>
                       </div>
-                      <p className="text-gray-600 font-sans text-[11px] mt-0.5 leading-relaxed">
+                      <p className="text-gray-900 font-sans text-xs mt-1 leading-relaxed font-semibold">
                         {n.message}
                       </p>
                     </div>
-                    <span className="text-[9px] font-semibold bg-emerald-50 text-emerald-700 px-1.5 py-0.5 rounded shrink-0 self-start uppercase">
-                      {n.channel}
-                    </span>
+                    <div className="flex flex-col items-end justify-between shrink-0 self-stretch">
+                      <span className="text-[9px] font-bold bg-emerald-50 text-emerald-700 px-1.5 py-0.5 rounded uppercase">
+                        {n.channel}
+                      </span>
+                      <span className="text-[8px] text-gray-400 font-mono">
+                        {new Date(n.timestamp).toLocaleDateString('pt-BR')}
+                      </span>
+                    </div>
                   </div>
                 ))
               )}

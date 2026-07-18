@@ -91,12 +91,39 @@ export function setActiveTenantId(tenantId: string): void {
 }
 
 /**
+ * Utility to recursively strip any properties with 'undefined' values from an object,
+ * as Firestore throws errors when trying to write properties with 'undefined' values.
+ */
+export function sanitizeForFirestore<T>(obj: T): T {
+  if (obj === null || obj === undefined) {
+    return null as any;
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(sanitizeForFirestore) as any;
+  }
+  if (typeof obj === 'object') {
+    const res: any = {};
+    for (const key in obj) {
+      if (Object.prototype.hasOwnProperty.call(obj, key)) {
+        const val = obj[key];
+        if (val !== undefined) {
+          res[key] = sanitizeForFirestore(val);
+        }
+      }
+    }
+    return res;
+  }
+  return obj;
+}
+
+/**
  * Prepares data for persistence by ensuring the 'companyId' field is set.
  */
 export function withTenant<T extends object>(data: T, tenantId: string = resolveCurrentTenantId()): T & { companyId: string } {
+  const sanitized = sanitizeForFirestore(data);
   return {
-    ...data,
-    companyId: (data as any).companyId || tenantId,
+    ...sanitized,
+    companyId: (sanitized as any).companyId || tenantId,
   } as T & { companyId: string };
 }
 

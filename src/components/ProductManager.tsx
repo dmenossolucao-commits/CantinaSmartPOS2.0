@@ -7,7 +7,7 @@ import React, { useState, useMemo } from 'react';
 import { Product } from '../types';
 import { 
   Package, Search, Plus, Filter, Trash2, Edit2, AlertTriangle, 
-  CheckCircle, ArrowUpDown, X, Sparkles 
+  CheckCircle, ArrowUpDown, X, Sparkles, ToggleLeft, ToggleRight, Settings 
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -17,6 +17,8 @@ interface ProductManagerProps {
   onUpdateProduct: (product: Product) => void;
   onDeleteProduct: (productId: string) => void;
   onZeroStock?: () => void;
+  useStockControl?: boolean;
+  onToggleStockControl?: () => void;
 }
 
 export default function ProductManager({ 
@@ -24,7 +26,9 @@ export default function ProductManager({
   onAddProduct, 
   onUpdateProduct, 
   onDeleteProduct,
-  onZeroStock
+  onZeroStock,
+  useStockControl = true,
+  onToggleStockControl
 }: ProductManagerProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('Todos');
@@ -139,7 +143,7 @@ export default function ProductManager({
         price: priceNum,
         category: formCategory,
         stock: Number(formStock),
-        minStock: Number(formMinStock),
+        minStock: Math.max(0, Number(formMinStock) || 0),
         imageUrl: formImageUrl || undefined
       };
       onUpdateProduct(updated);
@@ -151,7 +155,7 @@ export default function ProductManager({
         price: priceNum,
         category: formCategory,
         stock: Number(formStock),
-        minStock: Number(formMinStock),
+        minStock: Math.max(0, Number(formMinStock) || 0),
         imageUrl: formImageUrl || undefined
       };
       onAddProduct(newP);
@@ -184,7 +188,7 @@ export default function ProductManager({
     setFormPrice(product.price.toString());
     setFormCategory(product.category);
     setFormStock(product.stock.toString());
-    setFormMinStock(product.minStock.toString());
+    setFormMinStock(Math.max(0, product.minStock || 0).toString());
     setFormImageUrl(product.imageUrl || '');
     setShowModal(true);
   };
@@ -222,6 +226,21 @@ export default function ProductManager({
               Cardápio e Estoque da Cantina
             </h2>
             <div className="flex items-center gap-2 shrink-0">
+              {onToggleStockControl && (
+                <button
+                  id="toggle-stock-control-btn"
+                  onClick={onToggleStockControl}
+                  className={`py-1.5 px-3 border rounded-xl text-xs font-sans font-bold transition-colors flex items-center gap-1.5 shadow-sm ${
+                    useStockControl 
+                      ? 'bg-teal-50 hover:bg-teal-100 border-teal-200 text-teal-700' 
+                      : 'bg-amber-50 hover:bg-amber-100 border-amber-200 text-amber-700'
+                  }`}
+                  title="Tornar o uso de estoque opcional ou obrigatório no PDV"
+                >
+                  {useStockControl ? <ToggleRight size={15} /> : <ToggleLeft size={15} />}
+                  Estoque: {useStockControl ? 'Obrigatório' : 'Opcional'}
+                </button>
+              )}
               <button
                 id="zero-stock-btn"
                 onClick={handleZeroStockClick}
@@ -465,7 +484,9 @@ export default function ProductManager({
 
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="text-[10px] text-gray-500 font-sans block mb-1">Estoque Inicial *</label>
+                    <label className="text-[10px] text-gray-500 font-sans block mb-1">
+                      {editingProduct ? 'Estoque Atual *' : 'Estoque Inicial *'}
+                    </label>
                     <input
                       id="form-product-stock"
                       type="number"

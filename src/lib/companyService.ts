@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { db } from './firebase';
+import { db, auth } from './firebase';
 import { 
   collection, 
   doc, 
@@ -14,6 +14,36 @@ import {
   writeBatch 
 } from 'firebase/firestore';
 import { Company, AppUser } from '../types';
+
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null): never {
+  const errInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo: auth.currentUser?.providerData?.map(provider => ({
+        providerId: provider.providerId,
+        email: provider.email,
+      })) || []
+    },
+    operationType,
+    path
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
 
 export const DEFAULT_COMPANY_ID = 'default_udv_company';
 
@@ -47,8 +77,7 @@ export const companyService = {
       }
       return null;
     } catch (error) {
-      console.error(`Error retrieving company ${id}:`, error);
-      return null;
+      handleFirestoreError(error, OperationType.GET, 'settings');
     }
   },
 
@@ -66,8 +95,7 @@ export const companyService = {
       });
       return list;
     } catch (error) {
-      console.error('Error listing companies:', error);
-      return [];
+      handleFirestoreError(error, OperationType.LIST, 'settings');
     }
   },
 
@@ -78,8 +106,7 @@ export const companyService = {
     try {
       await setDoc(doc(db, 'settings', `company_${company.id}`), company);
     } catch (error) {
-      console.error(`Error saving company ${company.id}:`, error);
-      throw error;
+      handleFirestoreError(error, OperationType.WRITE, 'settings');
     }
   },
 
@@ -104,7 +131,12 @@ export const companyService = {
    */
   async associateUsersToDefaultCompany(): Promise<void> {
     try {
-      const usersSnap = await getDocs(collection(db, 'users'));
+      let usersSnap;
+      try {
+        usersSnap = await getDocs(collection(db, 'users'));
+      } catch (error) {
+        handleFirestoreError(error, OperationType.LIST, 'users');
+      }
       const batch = writeBatch(db);
       let needsCommit = false;
 
@@ -118,7 +150,11 @@ export const companyService = {
       });
 
       if (needsCommit) {
-        await batch.commit();
+        try {
+          await batch.commit();
+        } catch (error) {
+          handleFirestoreError(error, OperationType.WRITE, 'users');
+        }
         console.log('Successfully associated all current users to default company.');
       }
     } catch (error) {

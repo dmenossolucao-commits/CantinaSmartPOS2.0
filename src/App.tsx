@@ -24,6 +24,8 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 
 // Import Firebase config & Firestore handlers
+import { signInAnonymously } from 'firebase/auth';
+import { auth } from './lib/firebase';
 import { 
   checkAndPopulateInitialData,
   saveProductInCloud,
@@ -51,7 +53,11 @@ import {
   subscribeBackups,
   subscribeTickets,
   subscribeNotifications,
-  subscribePixKey
+  subscribePixKey,
+  subscribeStockControl,
+  saveStockControlInCloud,
+  markNotificationAsReadInCloud,
+  markAllNotificationsAsReadInCloud
 } from './lib/firebaseService';
 
 type ActiveTab = 'pdv' | 'clientes' | 'prazo' | 'historico' | 'cardapio' | 'admin' | 'mobile' | 'usuarios';
@@ -86,6 +92,7 @@ export default function App() {
   const [tickets, setTickets] = useState<SupportTicket[]>([]);
   const [notifications, setNotifications] = useState<NotificationLog[]>([]);
   const [pixKey, setPixKey] = useState<string>('pix@udvcantina.com');
+  const [useStockControl, setUseStockControl] = useState<boolean>(true);
 
   // Active floating push notifications list
   const [pushAlerts, setPushAlerts] = useState<PushAlert[]>([]);
@@ -94,6 +101,13 @@ export default function App() {
   useEffect(() => {
     async function setupCloudSync() {
       try {
+        // Attempt anonymous sign-in to satisfy standard Firestore rules demanding authentication
+        try {
+          await signInAnonymously(auth);
+        } catch (authErr) {
+          console.warn('Could not authenticate anonymously with Firebase Auth, proceeding anyway:', authErr);
+        }
+
         // Prepare migration data from localStorage if available, fallback to default seed data
         const localProducts = (() => {
           const local = localStorage.getItem('udv_canteen_products');
@@ -222,6 +236,12 @@ export default function App() {
           if (loadedCount < totalCollections) checkLoadingHydration();
         });
 
+        const unsubStock = subscribeStockControl((enabled) => {
+          setUseStockControl(enabled);
+        }, (err) => {
+          console.error('Error syncing stock control settings:', err);
+        });
+
         return () => {
           unsubUsers();
           unsubProducts();
@@ -231,6 +251,7 @@ export default function App() {
           unsubTickets();
           unsubNotifications();
           unsubPix();
+          unsubStock();
         };
       } catch (err) {
         console.error('Cloud Sync initialization error:', err);
@@ -285,15 +306,31 @@ export default function App() {
 
   // Complete PDV transaction callback
   const handleCompleteSale = async (tx: Transaction, updatedClients: Client[], updatedProducts: Product[]) => {
+    // Optimistic UI updates to synchronize instantly:
+    setProducts(updatedProducts);
+    setClients(updatedClients);
+    setTransactions(prev => {
+      const nextList = [tx, ...prev];
+      localStorage.setItem('udv_canteen_transactions', JSON.stringify(nextList));
+      return nextList;
+    });
+    localStorage.setItem('udv_canteen_products', JSON.stringify(updatedProducts));
+    localStorage.setItem('udv_canteen_clients', JSON.stringify(updatedClients));
+    
     try {
       await completeSaleInCloud(tx, updatedClients, updatedProducts);
     } catch (err) {
       console.error(err);
-      triggerPushNotification('Erro', 'Não foi possível salvar a venda na nuvem.', 'warn');
+      triggerPushNotification('Venda Salva', 'Salvo no navegador (Erro de sincronização na nuvem).', 'warn');
     }
   };
 
   const handleAddTransaction = async (tx: Transaction) => {
+    setTransactions(prev => {
+      const nextList = [tx, ...prev];
+      localStorage.setItem('udv_canteen_transactions', JSON.stringify(nextList));
+      return nextList;
+    });
     try {
       await saveTransactionInCloud(tx);
     } catch (err) {
@@ -301,74 +338,136 @@ export default function App() {
     }
   };
 
+  const handleToggleStockControl = async () => {
+    const nextVal = !useStockControl;
+    setUseStockControl(nextVal);
+    try {
+      await saveStockControlInCloud(nextVal);
+      triggerPushNotification('Estoque', `Controle de estoque foi ${nextVal ? 'ativado' : 'desativado'}.`, 'success');
+    } catch (err) {
+      console.error(err);
+      triggerPushNotification('Aviso de Sincronização', 'Configuração de estoque salva no navegador.', 'warn');
+    }
+  };
+
   const handleZeroStock = async () => {
+    const previousProducts = [...products];
+    setProducts(prev => prev.map(p => ({ ...p, stock: 0 })));
     try {
       await zeroStockInCloud(products);
       triggerPushNotification('Estoque Zerado', 'O estoque de todos os produtos foi zerado via comando administrativo.', 'warn');
     } catch (err) {
       console.error(err);
+      setProducts(previousProducts);
     }
   };
 
   const handleZeroClients = async () => {
+    const previousClients = [...clients];
+    setClients(prev => prev.map(c => ({ ...c, balance: 0 })));
     try {
       await zeroClientsInCloud(clients);
       triggerPushNotification('Clientes Zerados', 'O saldo de todos os clientes foi zerado para R$ 0,00 via comando administrativo.', 'warn');
     } catch (err) {
       console.error(err);
+      setClients(previousClients);
     }
   };
 
   // Add / Edit / Delete Client
   const handleAddClient = async (c: Client) => {
+    setClients(prev => {
+      const nextList = [...prev, c];
+      localStorage.setItem('udv_canteen_clients', JSON.stringify(nextList));
+      return nextList;
+    });
     try {
       await saveClientInCloud(c);
       triggerPushNotification('Novo Cliente Cadastrado', `${c.name} foi adicionado ao banco com limite de R$ ${c.creditLimit.toFixed(2)}.`);
     } catch (err) {
       console.error(err);
+      triggerPushNotification('Salvo Localmente', `${c.name} salvo no navegador (Sincronização pendente).`, 'warn');
     }
   };
 
   const handleUpdateClient = async (c: Client) => {
+    setClients(prev => {
+      const nextList = prev.map(cl => cl.id === c.id ? c : cl);
+      localStorage.setItem('udv_canteen_clients', JSON.stringify(nextList));
+      return nextList;
+    });
     try {
       await saveClientInCloud(c);
     } catch (err) {
       console.error(err);
+      triggerPushNotification('Salvo Localmente', `Alterações de ${c.name} salvas no navegador (Sincronização pendente).`, 'warn');
     }
   };
 
   const handleDeleteClient = async (clientId: string) => {
+    setClients(prev => {
+      const nextList = prev.filter(cl => cl.id !== clientId);
+      localStorage.setItem('udv_canteen_clients', JSON.stringify(nextList));
+      return nextList;
+    });
     try {
       await deleteClientInCloud(clientId);
       triggerPushNotification('Cadastro Excluído', 'O cliente foi removido com sucesso.', 'warn');
     } catch (err) {
       console.error(err);
+      triggerPushNotification('Excluído Localmente', 'O cliente foi removido no navegador (Sincronização pendente).', 'warn');
     }
   };
 
   // Add / Edit / Delete Product
   const handleAddProduct = async (p: Product) => {
+    // Prevent negative minStock
+    p.minStock = Math.max(0, p.minStock || 0);
+    setProducts(prev => {
+      const nextList = [...prev, p];
+      localStorage.setItem('udv_canteen_products', JSON.stringify(nextList));
+      return nextList;
+    });
     try {
       await saveProductInCloud(p);
-      triggerPushNotification('Cardápio Atualizado', `Novo produto "${p.name}" foi disponibilizado no PDV.`);
+      triggerPushNotification('Cardápio Atualizado', `Novo produto "${p.name}" foi disponibilizado no PDV.`, 'success');
     } catch (err) {
-      console.error(err);
+      console.error('Error saving new product to cloud:', err);
+      triggerPushNotification('Salvo Localmente', `Produto "${p.name}" salvo no navegador (Sincronização pendente).`, 'warn');
     }
   };
 
   const handleUpdateProduct = async (p: Product) => {
+    // Prevent negative minStock
+    p.minStock = Math.max(0, p.minStock || 0);
+    setProducts(prev => {
+      const nextList = prev.map(prod => prod.id === p.id ? p : prod);
+      localStorage.setItem('udv_canteen_products', JSON.stringify(nextList));
+      return nextList;
+    });
     try {
       await saveProductInCloud(p);
+      triggerPushNotification('Cardápio Atualizado', `O produto "${p.name}" foi salvo com sucesso.`, 'success');
     } catch (err) {
-      console.error(err);
+      console.error('Error updating product in cloud:', err);
+      triggerPushNotification('Salvo Localmente', `Produto "${p.name}" salvo no navegador (Sincronização pendente).`, 'warn');
     }
   };
 
   const handleDeleteProduct = async (productId: string) => {
+    const productToDelete = products.find(prod => prod.id === productId);
+    const productName = productToDelete ? productToDelete.name : 'Produto';
+    setProducts(prev => {
+      const nextList = prev.filter(prod => prod.id !== productId);
+      localStorage.setItem('udv_canteen_products', JSON.stringify(nextList));
+      return nextList;
+    });
     try {
       await deleteProductInCloud(productId);
+      triggerPushNotification('Cardápio Atualizado', `O produto "${productName}" foi excluído.`, 'success');
     } catch (err) {
-      console.error(err);
+      console.error('Error deleting product in cloud:', err);
+      triggerPushNotification('Excluído Localmente', `O produto "${productName}" foi excluído no navegador (Sincronização pendente).`, 'warn');
     }
   };
 
@@ -517,6 +616,24 @@ export default function App() {
     localStorage.removeItem('udv_current_user');
     localStorage.removeItem('udv_active_tenant_id');
     triggerPushNotification('Sessão Encerrada', 'Você saiu do sistema com segurança.', 'info');
+  };
+
+  const handleMarkNotificationAsRead = async (id: string) => {
+    setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
+    try {
+      await markNotificationAsReadInCloud(id);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleMarkAllNotificationsAsRead = async () => {
+    setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+    try {
+      await markAllNotificationsAsReadInCloud(notifications);
+    } catch (err) {
+      console.error(err);
+    }
   };
 
 
@@ -720,6 +837,7 @@ export default function App() {
                 onAddClient={handleAddClient}
                 triggerPushNotification={triggerPushNotification}
                 pixKey={pixKey}
+                useStockControl={useStockControl}
               />
             )}
 
@@ -766,6 +884,8 @@ export default function App() {
                 onUpdateProduct={handleUpdateProduct}
                 onDeleteProduct={handleDeleteProduct}
                 onZeroStock={handleZeroStock}
+                useStockControl={useStockControl}
+                onToggleStockControl={handleToggleStockControl}
               />
             )}
 
@@ -782,6 +902,8 @@ export default function App() {
                 onDeleteSale={handleDeleteSale}
                 pixKey={pixKey}
                 onUpdatePixKey={savePixKeyInCloud}
+                onMarkNotificationAsRead={handleMarkNotificationAsRead}
+                onMarkAllNotificationsAsRead={handleMarkAllNotificationsAsRead}
               />
             )}
 

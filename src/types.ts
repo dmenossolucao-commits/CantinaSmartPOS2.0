@@ -93,6 +93,7 @@ export interface NotificationLog {
   timestamp: string;
   status: 'enviado' | 'pendente' | 'falha';
   companyId?: string; // Multi-company architecture ready
+  read?: boolean; // Track read/unread status
 }
 
 export interface BackupHistory {

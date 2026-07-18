@@ -1,10 +1,99 @@
-import { db } from './firebase';
+import { db, auth } from './firebase';
 import { 
   collection, doc, getDocs, setDoc, writeBatch, deleteDoc, updateDoc, onSnapshot, query, where
 } from 'firebase/firestore';
 import { Product, Client, Transaction, BackupHistory, SupportTicket, NotificationLog, AppUser } from '../types';
 import { withTenant, resolveCollectionPath, resolveCurrentTenantId } from './tenantService';
 import { companyService } from './companyService';
+
+export enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+export interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+    emailVerified?: boolean | null;
+    isAnonymous?: boolean | null;
+    tenantId?: string | null;
+    providerInfo?: {
+      providerId?: string | null;
+      email?: string | null;
+    }[];
+  };
+}
+
+export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null): never {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo: auth.currentUser?.providerData?.map(provider => ({
+        providerId: provider.providerId,
+        email: provider.email,
+      })) || []
+    },
+    operationType,
+    path
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
+
+export async function safeSetDoc(docRef: any, data: any, collectionPath: string) {
+  try {
+    await setDoc(docRef, data);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, collectionPath);
+  }
+}
+
+export async function safeDeleteDoc(docRef: any, collectionPath: string) {
+  try {
+    await deleteDoc(docRef);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, collectionPath);
+  }
+}
+
+export async function safeUpdateDoc(docRef: any, data: any, collectionPath: string) {
+  try {
+    await updateDoc(docRef, data);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, collectionPath);
+  }
+}
+
+export async function safeCommit(batch: any, collectionPath: string) {
+  try {
+    await batch.commit();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, collectionPath);
+  }
+}
+
+export function wrapOnError(onError: (err: any) => void, operationType: OperationType, path: string | null) {
+  return (err: any) => {
+    try {
+      handleFirestoreError(err, operationType, path);
+    } catch (wrappedErr) {
+      onError(wrappedErr);
+    }
+  };
+}
 
 /**
  * Checks if collections are empty in Firestore and, if so, populates them with the
@@ -24,11 +113,37 @@ export async function checkAndPopulateInitialData(
     await companyService.initializeDefaultCompany();
     await companyService.associateUsersToDefaultCompany();
 
+    const userPath = resolveCollectionPath('users');
+    const prodPath = resolveCollectionPath('products');
+    const clientPath = resolveCollectionPath('clients');
+    const settingsPath = resolveCollectionPath('settings');
+    const txPath = resolveCollectionPath('transactions');
+    const backupPath = resolveCollectionPath('backups');
+    const ticketPath = resolveCollectionPath('tickets');
+    const notifPath = resolveCollectionPath('notifications');
+
     // 0. Fetch existing tables to determine if db is already in use using resolved paths
-    const userSnap = await getDocs(collection(db, resolveCollectionPath('users')));
-    const prodSnap = await getDocs(collection(db, resolveCollectionPath('products')));
-    const clientSnap = await getDocs(collection(db, resolveCollectionPath('clients')));
-    const settingsSnap = await getDocs(collection(db, resolveCollectionPath('settings')));
+    let userSnap, prodSnap, clientSnap, settingsSnap;
+    try {
+      userSnap = await getDocs(collection(db, userPath));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.LIST, userPath);
+    }
+    try {
+      prodSnap = await getDocs(collection(db, prodPath));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.LIST, prodPath);
+    }
+    try {
+      clientSnap = await getDocs(collection(db, clientPath));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.LIST, clientPath);
+    }
+    try {
+      settingsSnap = await getDocs(collection(db, settingsPath));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.LIST, settingsPath);
+    }
 
     const tenantId = resolveCurrentTenantId();
     const isSystemInitialized = settingsSnap.docs.some(doc => doc.id === 'system' || doc.id === `system_${tenantId}`);
@@ -49,20 +164,16 @@ export async function checkAndPopulateInitialData(
         passwordHash: '8848',
         createdAt: new Date().toISOString()
       });
-      await setDoc(doc(db, resolveCollectionPath('users'), adminUser.id), adminUser);
+      await safeSetDoc(doc(db, userPath, adminUser.id), adminUser, userPath);
     }
 
-    if (isAnyDataPresent) {
-      console.log('Database already initialized. Skipping seeding.');
-      if (!isSystemInitialized) {
-        await setDoc(doc(db, resolveCollectionPath('settings'), `system_${tenantId}`), {
-          key: 'system_initialized',
-          seeded: true,
-          seededAt: new Date().toISOString(),
-          companyId: tenantId
-        });
-      }
-      return;
+    if (!isSystemInitialized) {
+      await safeSetDoc(doc(db, settingsPath, `system_${tenantId}`), {
+        key: 'system_initialized',
+        seeded: true,
+        seededAt: new Date().toISOString(),
+        companyId: tenantId
+      }, settingsPath);
     }
 
     // 1. Products
@@ -71,9 +182,9 @@ export async function checkAndPopulateInitialData(
       const batch = writeBatch(db);
       localProducts.forEach(p => {
         const tenantProduct = withTenant(p);
-        batch.set(doc(db, resolveCollectionPath('products'), tenantProduct.id), tenantProduct);
+        batch.set(doc(db, prodPath, tenantProduct.id), tenantProduct);
       });
-      await batch.commit();
+      await safeCommit(batch, prodPath);
     }
 
     // 2. Clients
@@ -82,13 +193,18 @@ export async function checkAndPopulateInitialData(
       const batch = writeBatch(db);
       localClients.forEach(c => {
         const tenantClient = withTenant(c);
-        batch.set(doc(db, resolveCollectionPath('clients'), tenantClient.id), tenantClient);
+        batch.set(doc(db, clientPath, tenantClient.id), tenantClient);
       });
-      await batch.commit();
+      await safeCommit(batch, clientPath);
     }
 
     // 3. Transactions
-    const txSnap = await getDocs(collection(db, resolveCollectionPath('transactions')));
+    let txSnap;
+    try {
+      txSnap = await getDocs(collection(db, txPath));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.LIST, txPath);
+    }
     if (txSnap.empty && localTransactions.length > 0) {
       console.log('Populating transactions to Firestore cloud...');
       const chunk = <T>(arr: T[], size: number): T[][] => 
@@ -101,59 +217,74 @@ export async function checkAndPopulateInitialData(
         const batch = writeBatch(db);
         itemChunk.forEach(t => {
           const tenantTx = withTenant(t);
-          batch.set(doc(db, resolveCollectionPath('transactions'), tenantTx.id), tenantTx);
+          batch.set(doc(db, txPath, tenantTx.id), tenantTx);
         });
-        await batch.commit();
+        await safeCommit(batch, txPath);
       }
     }
 
     // 4. Backups
-    const backupSnap = await getDocs(collection(db, resolveCollectionPath('backups')));
+    let backupSnap;
+    try {
+      backupSnap = await getDocs(collection(db, backupPath));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.LIST, backupPath);
+    }
     if (backupSnap.empty && localBackups.length > 0) {
       const batch = writeBatch(db);
       localBackups.forEach(b => {
         const tenantBackup = withTenant(b);
-        batch.set(doc(db, resolveCollectionPath('backups'), tenantBackup.id), tenantBackup);
+        batch.set(doc(db, backupPath, tenantBackup.id), tenantBackup);
       });
-      await batch.commit();
+      await safeCommit(batch, backupPath);
     }
 
     // 5. Support Tickets
-    const ticketSnap = await getDocs(collection(db, resolveCollectionPath('tickets')));
+    let ticketSnap;
+    try {
+      ticketSnap = await getDocs(collection(db, ticketPath));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.LIST, ticketPath);
+    }
     if (ticketSnap.empty && localTickets.length > 0) {
       const batch = writeBatch(db);
       localTickets.forEach(t => {
         const tenantTicket = withTenant(t);
-        batch.set(doc(db, resolveCollectionPath('tickets'), tenantTicket.id), tenantTicket);
+        batch.set(doc(db, ticketPath, tenantTicket.id), tenantTicket);
       });
-      await batch.commit();
+      await safeCommit(batch, ticketPath);
     }
 
     // 6. Notification logs
-    const notifSnap = await getDocs(collection(db, resolveCollectionPath('notifications')));
+    let notifSnap;
+    try {
+      notifSnap = await getDocs(collection(db, notifPath));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.LIST, notifPath);
+    }
     if (notifSnap.empty && localNotifications.length > 0) {
       const batch = writeBatch(db);
       localNotifications.forEach(n => {
         const tenantNotification = withTenant(n);
-        batch.set(doc(db, resolveCollectionPath('notifications'), tenantNotification.id), tenantNotification);
+        batch.set(doc(db, notifPath, tenantNotification.id), tenantNotification);
       });
-      await batch.commit();
+      await safeCommit(batch, notifPath);
     }
 
     // 7. Pix key settings
-    const pixDoc = doc(db, resolveCollectionPath('settings'), `pix_${tenantId}`);
+    const pixDoc = doc(db, settingsPath, `pix_${tenantId}`);
     const hasPixForTenant = settingsSnap.docs.some(doc => doc.id === `pix_${tenantId}` || doc.id === 'pix');
     if (!hasPixForTenant) {
-      await setDoc(pixDoc, { key: localPixKey, companyId: tenantId });
+      await safeSetDoc(pixDoc, { key: localPixKey, companyId: tenantId }, settingsPath);
     }
 
     // 8. Mark as seeded
-    await setDoc(doc(db, resolveCollectionPath('settings'), `system_${tenantId}`), {
+    await safeSetDoc(doc(db, settingsPath, `system_${tenantId}`), {
       key: 'system_initialized',
       seeded: true,
       seededAt: new Date().toISOString(),
       companyId: tenantId
-    });
+    }, settingsPath);
   } catch (err) {
     console.error('Error migrating/initializing data to Firestore:', err);
   }
@@ -162,67 +293,96 @@ export async function checkAndPopulateInitialData(
 // Product helpers
 export async function saveProductInCloud(p: Product) {
   const tenantProduct = withTenant(p);
-  await setDoc(doc(db, resolveCollectionPath('products'), tenantProduct.id), tenantProduct);
+  const path = resolveCollectionPath('products');
+  await safeSetDoc(doc(db, path, tenantProduct.id), tenantProduct, path);
 }
 
 export async function deleteProductInCloud(productId: string) {
-  await deleteDoc(doc(db, resolveCollectionPath('products'), productId));
+  const path = resolveCollectionPath('products');
+  await safeDeleteDoc(doc(db, path, productId), path);
 }
 
 // Client helpers
 export async function saveClientInCloud(c: Client) {
   const tenantClient = withTenant(c);
-  await setDoc(doc(db, resolveCollectionPath('clients'), tenantClient.id), tenantClient);
+  const path = resolveCollectionPath('clients');
+  await safeSetDoc(doc(db, path, tenantClient.id), tenantClient, path);
 }
 
 export async function deleteClientInCloud(clientId: string) {
-  await deleteDoc(doc(db, resolveCollectionPath('clients'), clientId));
+  const path = resolveCollectionPath('clients');
+  await safeDeleteDoc(doc(db, path, clientId), path);
 }
 
 // Transaction helpers
 export async function saveTransactionInCloud(t: Transaction) {
   const tenantTx = withTenant(t);
-  await setDoc(doc(db, resolveCollectionPath('transactions'), tenantTx.id), tenantTx);
+  const path = resolveCollectionPath('transactions');
+  await safeSetDoc(doc(db, path, tenantTx.id), tenantTx, path);
 }
 
 // Notification helpers
 export async function saveNotificationInCloud(n: NotificationLog) {
-  const tenantNotification = withTenant(n);
-  await setDoc(doc(db, resolveCollectionPath('notifications'), tenantNotification.id), tenantNotification);
+  const notificationWithRead = { read: false, ...n };
+  const tenantNotification = withTenant(notificationWithRead);
+  const path = resolveCollectionPath('notifications');
+  await safeSetDoc(doc(db, path, tenantNotification.id), tenantNotification, path);
+}
+
+export async function markNotificationAsReadInCloud(notificationId: string) {
+  const path = resolveCollectionPath('notifications');
+  await safeUpdateDoc(doc(db, path, notificationId), { read: true }, path);
+}
+
+export async function markAllNotificationsAsReadInCloud(notifications: NotificationLog[]) {
+  const batch = writeBatch(db);
+  const path = resolveCollectionPath('notifications');
+  notifications.forEach(n => {
+    if (!n.read) {
+      batch.update(doc(db, path, n.id), { read: true });
+    }
+  });
+  await safeCommit(batch, path);
 }
 
 // Backup helpers
 export async function saveBackupInCloud(b: BackupHistory) {
   const tenantBackup = withTenant(b);
-  await setDoc(doc(db, resolveCollectionPath('backups'), tenantBackup.id), tenantBackup);
+  const path = resolveCollectionPath('backups');
+  await safeSetDoc(doc(db, path, tenantBackup.id), tenantBackup, path);
 }
 
 // Support ticket helpers
 export async function saveTicketInCloud(t: SupportTicket) {
   const tenantTicket = withTenant(t);
-  await setDoc(doc(db, resolveCollectionPath('tickets'), tenantTicket.id), tenantTicket);
+  const path = resolveCollectionPath('tickets');
+  await safeSetDoc(doc(db, path, tenantTicket.id), tenantTicket, path);
 }
 
 // Settings helpers
 export async function savePixKeyInCloud(key: string) {
   const tenantId = resolveCurrentTenantId();
-  await setDoc(doc(db, resolveCollectionPath('settings'), `pix_${tenantId}`), { key, companyId: tenantId });
+  const path = resolveCollectionPath('settings');
+  await safeSetDoc(doc(db, path, `pix_${tenantId}`), { key, companyId: tenantId }, path);
 }
 
 // Complete sales with atomic batch transactions
 export async function completeSaleInCloud(tx: Transaction, updatedClients: Client[], updatedProducts: Product[]) {
   const batch = writeBatch(db);
+  const txPath = resolveCollectionPath('transactions');
+  const clientPath = resolveCollectionPath('clients');
+  const prodPath = resolveCollectionPath('products');
   
   // Save transaction
   const tenantTx = withTenant(tx);
-  batch.set(doc(db, resolveCollectionPath('transactions'), tenantTx.id), tenantTx);
+  batch.set(doc(db, txPath, tenantTx.id), tenantTx);
 
   // Update relevant clients - ONLY the one associated with the transaction (if any)
   if (tx.clientId) {
     const associatedClient = updatedClients.find(c => c.id === tx.clientId);
     if (associatedClient) {
       const tenantClient = withTenant(associatedClient);
-      batch.set(doc(db, resolveCollectionPath('clients'), tenantClient.id), tenantClient);
+      batch.set(doc(db, clientPath, tenantClient.id), tenantClient);
     }
   }
 
@@ -231,35 +391,41 @@ export async function completeSaleInCloud(tx: Transaction, updatedClients: Clien
   updatedProducts.forEach(p => {
     if (purchasedProductIds.has(p.id)) {
       const tenantProduct = withTenant(p);
-      batch.set(doc(db, resolveCollectionPath('products'), tenantProduct.id), tenantProduct);
+      batch.set(doc(db, prodPath, tenantProduct.id), tenantProduct);
     }
   });
 
-  await batch.commit();
+  await safeCommit(batch, txPath);
 }
 
 // Admin Commands
 export async function zeroStockInCloud(products: Product[]) {
   const batch = writeBatch(db);
+  const path = resolveCollectionPath('products');
   products.forEach(p => {
-    batch.update(doc(db, resolveCollectionPath('products'), p.id), { stock: 0 });
+    batch.update(doc(db, path, p.id), { stock: 0 });
   });
-  await batch.commit();
+  await safeCommit(batch, path);
 }
 
 // Zero Client balances helper
 export async function zeroClientsInCloud(clients: Client[]) {
   const batch = writeBatch(db);
+  const path = resolveCollectionPath('clients');
   clients.forEach(c => {
-    batch.update(doc(db, resolveCollectionPath('clients'), c.id), { balance: 0 });
+    batch.update(doc(db, path, c.id), { balance: 0 });
   });
-  await batch.commit();
+  await safeCommit(batch, path);
 }
 
 // Cancel Sale Transaction
 export async function cancelSaleInCloud(tx: Transaction, products: Product[], clients: Client[]) {
+  const txPath = resolveCollectionPath('transactions');
+  const prodPath = resolveCollectionPath('products');
+  const clientPath = resolveCollectionPath('clients');
+
   // 1. Cancel transaction
-  await updateDoc(doc(db, resolveCollectionPath('transactions'), tx.id), { status: 'cancelado' });
+  await safeUpdateDoc(doc(db, txPath, tx.id), { status: 'cancelado' }, txPath);
 
   // 2. Restore product stock and revert balance
   const promises: Promise<void>[] = [];
@@ -268,7 +434,7 @@ export async function cancelSaleInCloud(tx: Transaction, products: Product[], cl
     const p = products.find(prod => prod.id === item.productId);
     if (p) {
       promises.push(
-        updateDoc(doc(db, resolveCollectionPath('products'), p.id), { stock: p.stock + item.quantity })
+        safeUpdateDoc(doc(db, prodPath, p.id), { stock: p.stock + item.quantity }, prodPath)
           .catch(err => console.warn(`Could not restore stock for product ${p.id}:`, err))
       );
     }
@@ -278,7 +444,7 @@ export async function cancelSaleInCloud(tx: Transaction, products: Product[], cl
     const c = clients.find(cl => cl.id === tx.clientId);
     if (c) {
       promises.push(
-        updateDoc(doc(db, resolveCollectionPath('clients'), c.id), { balance: c.balance + tx.total })
+        safeUpdateDoc(doc(db, clientPath, c.id), { balance: c.balance + tx.total }, clientPath)
           .catch(err => console.warn(`Could not revert balance for client ${c.id}:`, err))
       );
     }
@@ -291,8 +457,12 @@ export async function cancelSaleInCloud(tx: Transaction, products: Product[], cl
 
 // Delete Sale Transaction permanently
 export async function deleteSaleInCloud(tx: Transaction, products: Product[], clients: Client[]) {
+  const txPath = resolveCollectionPath('transactions');
+  const prodPath = resolveCollectionPath('products');
+  const clientPath = resolveCollectionPath('clients');
+
   // 1. Delete transaction first
-  await deleteDoc(doc(db, resolveCollectionPath('transactions'), tx.id));
+  await safeDeleteDoc(doc(db, txPath, tx.id), txPath);
 
   // 2. Restore stock and revert balance only if not already cancelled
   if (tx.status !== 'cancelado') {
@@ -302,7 +472,7 @@ export async function deleteSaleInCloud(tx: Transaction, products: Product[], cl
       const p = products.find(prod => prod.id === item.productId);
       if (p) {
         promises.push(
-          updateDoc(doc(db, resolveCollectionPath('products'), p.id), { stock: p.stock + item.quantity })
+          safeUpdateDoc(doc(db, prodPath, p.id), { stock: p.stock + item.quantity }, prodPath)
             .catch(err => console.warn(`Could not restore stock for product ${p.id}:`, err))
         );
       }
@@ -312,7 +482,7 @@ export async function deleteSaleInCloud(tx: Transaction, products: Product[], cl
       const c = clients.find(cl => cl.id === tx.clientId);
       if (c) {
         promises.push(
-          updateDoc(doc(db, resolveCollectionPath('clients'), c.id), { balance: c.balance + tx.total })
+          safeUpdateDoc(doc(db, clientPath, c.id), { balance: c.balance + tx.total }, clientPath)
             .catch(err => console.warn(`Could not revert balance for client ${c.id}:`, err))
         );
       }
@@ -332,35 +502,40 @@ export async function clearAllTransactionsInCloud(transactions: Transaction[]) {
     );
   
   const chunks = chunk(transactions, 400);
+  const path = resolveCollectionPath('transactions');
   for (const itemChunk of chunks) {
     const batch = writeBatch(db);
     itemChunk.forEach(t => {
-      batch.delete(doc(db, resolveCollectionPath('transactions'), t.id));
+      batch.delete(doc(db, path, t.id));
     });
-    await batch.commit();
+    await safeCommit(batch, path);
   }
 }
 
 // Mobile Portal: Balance Add Credit and Transaction
 export async function mobileAddCreditInCloud(clientId: string, amount: number, currentBalance: number, tx: Transaction) {
   const batch = writeBatch(db);
+  const clientPath = resolveCollectionPath('clients');
+  const txPath = resolveCollectionPath('transactions');
   
-  batch.update(doc(db, resolveCollectionPath('clients'), clientId), { balance: currentBalance + amount });
+  batch.update(doc(db, clientPath, clientId), { balance: currentBalance + amount });
   
   const tenantTx = withTenant(tx);
-  batch.set(doc(db, resolveCollectionPath('transactions'), tenantTx.id), tenantTx);
+  batch.set(doc(db, txPath, tenantTx.id), tenantTx);
   
-  await batch.commit();
+  await safeCommit(batch, clientPath);
 }
 
 // User Helpers
 export async function saveUserInCloud(u: AppUser) {
   const tenantUser = withTenant(u);
-  await setDoc(doc(db, resolveCollectionPath('users'), tenantUser.id), tenantUser);
+  const path = resolveCollectionPath('users');
+  await safeSetDoc(doc(db, path, tenantUser.id), tenantUser, path);
 }
 
 export async function deleteUserInCloud(userId: string) {
-  await deleteDoc(doc(db, resolveCollectionPath('users'), userId));
+  const path = resolveCollectionPath('users');
+  await safeDeleteDoc(doc(db, path, userId), path);
 }
 
 // Real-time subscription helper functions for central data layer access
@@ -369,9 +544,10 @@ export function subscribeUsers(
   onError: (err: any) => void
 ): () => void {
   const tenantId = resolveCurrentTenantId();
+  const path = resolveCollectionPath('users');
   return onSnapshot(
     query(
-      collection(db, resolveCollectionPath('users')),
+      collection(db, path),
       where('companyId', '==', tenantId)
     ),
     (snap) => {
@@ -385,7 +561,7 @@ export function subscribeUsers(
       });
       onUpdate(list);
     },
-    onError
+    wrapOnError(onError, OperationType.GET, path)
   );
 }
 
@@ -394,9 +570,10 @@ export function subscribeProducts(
   onError: (err: any) => void
 ): () => void {
   const tenantId = resolveCurrentTenantId();
+  const path = resolveCollectionPath('products');
   return onSnapshot(
     query(
-      collection(db, resolveCollectionPath('products')),
+      collection(db, path),
       where('companyId', '==', tenantId)
     ),
     (snap) => {
@@ -410,7 +587,7 @@ export function subscribeProducts(
       });
       onUpdate(list);
     },
-    onError
+    wrapOnError(onError, OperationType.GET, path)
   );
 }
 
@@ -419,9 +596,10 @@ export function subscribeClients(
   onError: (err: any) => void
 ): () => void {
   const tenantId = resolveCurrentTenantId();
+  const path = resolveCollectionPath('clients');
   return onSnapshot(
     query(
-      collection(db, resolveCollectionPath('clients')),
+      collection(db, path),
       where('companyId', '==', tenantId)
     ),
     (snap) => {
@@ -435,7 +613,7 @@ export function subscribeClients(
       });
       onUpdate(list);
     },
-    onError
+    wrapOnError(onError, OperationType.GET, path)
   );
 }
 
@@ -444,9 +622,10 @@ export function subscribeTransactions(
   onError: (err: any) => void
 ): () => void {
   const tenantId = resolveCurrentTenantId();
+  const path = resolveCollectionPath('transactions');
   return onSnapshot(
     query(
-      collection(db, resolveCollectionPath('transactions')),
+      collection(db, path),
       where('companyId', '==', tenantId)
     ),
     (snap) => {
@@ -461,7 +640,7 @@ export function subscribeTransactions(
       list.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
       onUpdate(list);
     },
-    onError
+    wrapOnError(onError, OperationType.GET, path)
   );
 }
 
@@ -470,9 +649,10 @@ export function subscribeBackups(
   onError: (err: any) => void
 ): () => void {
   const tenantId = resolveCurrentTenantId();
+  const path = resolveCollectionPath('backups');
   return onSnapshot(
     query(
-      collection(db, resolveCollectionPath('backups')),
+      collection(db, path),
       where('companyId', '==', tenantId)
     ),
     (snap) => {
@@ -487,7 +667,7 @@ export function subscribeBackups(
       list.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
       onUpdate(list);
     },
-    onError
+    wrapOnError(onError, OperationType.GET, path)
   );
 }
 
@@ -496,9 +676,10 @@ export function subscribeTickets(
   onError: (err: any) => void
 ): () => void {
   const tenantId = resolveCurrentTenantId();
+  const path = resolveCollectionPath('tickets');
   return onSnapshot(
     query(
-      collection(db, resolveCollectionPath('tickets')),
+      collection(db, path),
       where('companyId', '==', tenantId)
     ),
     (snap) => {
@@ -513,7 +694,7 @@ export function subscribeTickets(
       list.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
       onUpdate(list);
     },
-    onError
+    wrapOnError(onError, OperationType.GET, path)
   );
 }
 
@@ -522,9 +703,10 @@ export function subscribeNotifications(
   onError: (err: any) => void
 ): () => void {
   const tenantId = resolveCurrentTenantId();
+  const path = resolveCollectionPath('notifications');
   return onSnapshot(
     query(
-      collection(db, resolveCollectionPath('notifications')),
+      collection(db, path),
       where('companyId', '==', tenantId)
     ),
     (snap) => {
@@ -539,7 +721,7 @@ export function subscribeNotifications(
       list.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
       onUpdate(list);
     },
-    onError
+    wrapOnError(onError, OperationType.GET, path)
   );
 }
 
@@ -548,8 +730,9 @@ export function subscribePixKey(
   onError: (err: any) => void
 ): () => void {
   const tenantId = resolveCurrentTenantId();
+  const path = resolveCollectionPath('settings');
   return onSnapshot(
-    doc(db, resolveCollectionPath('settings'), `pix_${tenantId}`),
+    doc(db, path, `pix_${tenantId}`),
     (snap) => {
       if (snap.exists()) {
         const data = snap.data();
@@ -558,7 +741,34 @@ export function subscribePixKey(
         onUpdate('');
       }
     },
-    onError
+    wrapOnError(onError, OperationType.GET, path)
   );
 }
+
+export function subscribeStockControl(
+  onUpdate: (enabled: boolean) => void,
+  onError: (err: any) => void
+): () => void {
+  const tenantId = resolveCurrentTenantId();
+  const path = resolveCollectionPath('settings');
+  return onSnapshot(
+    doc(db, path, `stock_${tenantId}`),
+    (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        onUpdate(data.enabled !== false);
+      } else {
+        onUpdate(true); // Default to true
+      }
+    },
+    wrapOnError(onError, OperationType.GET, path)
+  );
+}
+
+export async function saveStockControlInCloud(enabled: boolean) {
+  const tenantId = resolveCurrentTenantId();
+  const path = resolveCollectionPath('settings');
+  await safeSetDoc(doc(db, path, `stock_${tenantId}`), { enabled, companyId: tenantId }, path);
+}
+
 

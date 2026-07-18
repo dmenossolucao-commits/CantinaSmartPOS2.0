@@ -23,6 +23,7 @@ interface PDVTerminalProps {
   onAddClient?: (client: Client) => void;
   triggerPushNotification: (title: string, body: string, type?: 'info' | 'success' | 'warn') => void;
   pixKey: string;
+  useStockControl?: boolean;
 }
 
 const PRODUCT_IMAGES: Record<string, string> = {
@@ -54,7 +55,8 @@ export default function PDVTerminal({
   onCompleteSale, 
   onAddClient,
   triggerPushNotification,
-  pixKey
+  pixKey,
+  useStockControl = true
 }: PDVTerminalProps) {
   
   // Core POS States
@@ -114,14 +116,14 @@ export default function PDVTerminal({
 
   // Add item to cart
   const addToCart = (product: Product) => {
-    if (product.stock <= 0) {
+    if (useStockControl && product.stock <= 0) {
       triggerPushNotification('Produto Esgotado', `"${product.name}" está temporariamente sem estoque.`, 'warn');
       return;
     }
 
     const existing = cart.find(item => item.product.id === product.id);
     if (existing) {
-      if (existing.quantity >= product.stock) {
+      if (useStockControl && existing.quantity >= product.stock) {
         triggerPushNotification('Estoque Limite', `Apenas ${product.stock} un disponíveis para "${product.name}".`, 'warn');
         return;
       }
@@ -144,7 +146,7 @@ export default function PDVTerminal({
     if (newQty <= 0) {
       setCart(cart.filter(i => i.product.id !== productId));
     } else {
-      if (delta > 0 && newQty > item.product.stock) {
+      if (useStockControl && delta > 0 && newQty > item.product.stock) {
         triggerPushNotification('Estoque Máximo', `Estoque máximo atingido para "${item.product.name}".`, 'warn');
         return;
       }
@@ -496,9 +498,9 @@ export default function PDVTerminal({
                 <div
                   key={product.id}
                   id={`product-card-${product.id}`}
-                  onClick={() => product.stock > 0 && addToCart(product)}
+                  onClick={() => (product.stock > 0 || !useStockControl) && addToCart(product)}
                   className={`group bg-white border rounded-3xl hover:shadow-md active:scale-[0.99] transition-all flex flex-col justify-between h-full relative cursor-pointer ${
-                    product.stock <= 0 
+                    product.stock <= 0 && useStockControl
                       ? 'opacity-60 bg-gray-50/50 cursor-not-allowed border-gray-150/70' 
                       : quantityInCart > 0 
                         ? 'border-[#1D4ED8] ring-2 ring-blue-600/20' 
@@ -514,36 +516,38 @@ export default function PDVTerminal({
 
                   {/* Stock Indicator Badge */}
                   <span className={`absolute top-3 left-3 z-10 px-2 py-0.5 rounded-lg text-[9px] font-mono font-bold ${
-                    product.stock <= 0 
+                    product.stock <= 0 && useStockControl
                       ? 'bg-red-50 text-red-600' 
-                      : product.stock <= product.minStock 
+                      : (product.stock <= 0 ? 'bg-gray-100 text-gray-500' : (product.stock <= product.minStock && useStockControl
                         ? 'bg-amber-50 text-amber-700 animate-pulse' 
-                        : 'bg-emerald-50 text-emerald-700'
+                        : 'bg-emerald-50 text-emerald-700'))
                   }`}>
-                    {product.stock <= 0 ? 'Esgotado' : `Est: ${product.stock}`}
+                    {product.stock <= 0 ? (useStockControl ? 'Esgotado' : 'Sem Est.') : `Est: ${product.stock}`}
                   </span>
 
                   {/* IMAGE TOP SECTION WITH OVERLAY - overflow-hidden here preserves rounded corners */}
-                  <div className="relative h-44 w-full bg-gray-100 overflow-hidden rounded-t-[22px] shrink-0">
+                  <div className="relative h-52 w-full bg-gray-100 overflow-hidden rounded-t-[22px] shrink-0">
                     <img 
                       src={getProductImage(product.id)} 
                       alt={product.name} 
-                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300 filter brightness-85 contrast-110"
                       referrerPolicy="no-referrer"
                     />
+                    {/* Dark overlay to escurecer mais a foto */}
+                    <div className="absolute inset-0 bg-black/25 mix-blend-multiply pointer-events-none" />
                     {/* Category overlay label in blue matching mockup */}
-                    <span className="absolute top-3 right-3 bg-[#1D4ED8] text-white text-[10px] font-bold px-2.5 py-0.5 rounded-full shadow-sm">
+                    <span className="absolute top-3 right-3 bg-[#1D4ED8] text-white text-[10px] font-bold px-2.5 py-0.5 rounded-full shadow-sm z-10">
                       {getCategoryVisualLabel(product)}
                     </span>
                   </div>
 
                   {/* CARD BODY */}
-                  <div className="p-3.5 flex-1 flex flex-col justify-between">
+                  <div className="p-4 flex-1 flex flex-col justify-between">
                     <div>
-                      <h3 className="font-sans font-medium text-gray-800 text-[14px] leading-snug line-clamp-2">
+                      <h3 className="font-sans font-semibold text-gray-800 text-[15px] leading-snug line-clamp-2">
                         {product.name}
                       </h3>
-                      <p className="font-sans font-bold text-[#1D4ED8] text-[16px] mt-1.5">
+                      <p className="font-sans font-bold text-[#1D4ED8] text-[17px] mt-1.5">
                         R$ {product.price.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                       </p>
                     </div>
@@ -551,14 +555,14 @@ export default function PDVTerminal({
                     {/* ADICIONAR FULL WIDTH BLUE BUTTON (Visual only, container handles click) */}
                     <div
                       className={`mt-4 w-full py-2 px-4 font-sans text-[13px] font-semibold rounded-2xl transition-colors flex items-center justify-center gap-1 shadow-sm ${
-                        product.stock <= 0 
+                        product.stock <= 0 && useStockControl
                           ? 'bg-gray-200 text-gray-400' 
                           : quantityInCart > 0 
                             ? 'bg-emerald-600 text-white' 
                             : 'bg-[#1D4ED8] hover:bg-blue-800 text-white'
                       }`}
                     >
-                      {product.stock <= 0 ? 'Esgotado' : quantityInCart > 0 ? `Selecionado (${quantityInCart})` : 'Adicionar'}
+                      {product.stock <= 0 && useStockControl ? 'Esgotado' : quantityInCart > 0 ? `Selecionado (${quantityInCart})` : 'Adicionar'}
                     </div>
                   </div>
                 </div>
@@ -574,9 +578,9 @@ export default function PDVTerminal({
               return (
                 <div
                   key={product.id}
-                  onClick={() => product.stock > 0 && addToCart(product)}
+                  onClick={() => (product.stock > 0 || !useStockControl) && addToCart(product)}
                   className={`bg-white border p-3 rounded-2xl flex items-center justify-between gap-3 hover:shadow-sm transition-all cursor-pointer ${
-                    product.stock <= 0 
+                    product.stock <= 0 && useStockControl
                       ? 'opacity-60 cursor-not-allowed border-gray-150/70' 
                       : quantityInCart > 0 
                         ? 'border-[#1D4ED8] ring-2 ring-blue-600/20' 
@@ -584,13 +588,15 @@ export default function PDVTerminal({
                   }`}
                 >
                   <div className="flex items-center gap-3 flex-1 min-w-0">
-                    <div className="w-14 h-14 bg-gray-100 rounded-xl shrink-0 relative">
+                    <div className="w-18 h-18 bg-gray-100 rounded-xl shrink-0 relative overflow-hidden">
                       <img 
                         src={getProductImage(product.id)} 
                         alt={product.name} 
-                        className="w-full h-full object-cover rounded-xl"
+                        className="w-full h-full object-cover rounded-xl filter brightness-85 contrast-110"
                         referrerPolicy="no-referrer"
                       />
+                      {/* Dark overlay to escurecer mais a foto */}
+                      <div className="absolute inset-0 bg-black/25 mix-blend-multiply pointer-events-none" />
                       {/* Quantity Badge in List View - Floating Outside Thumbnail and Highly Salient */}
                       {quantityInCart > 0 && (
                         <div className="absolute -top-2 -right-2 z-20 bg-[#1D4ED8] text-white font-sans font-black text-xs w-6.5 h-6.5 rounded-full flex items-center justify-center shadow-md border-2 border-white animate-scale-in">
@@ -603,30 +609,33 @@ export default function PDVTerminal({
                         <span className="text-[9px] font-bold text-[#1D4ED8] bg-blue-50 px-2 py-0.5 rounded-full shrink-0">
                           {getCategoryVisualLabel(product)}
                         </span>
-                        {product.stock <= product.minStock && (
+                        {product.stock <= product.minStock && useStockControl && (
                           <span className="text-[9px] font-mono text-amber-600 font-bold">Est: {product.stock}</span>
                         )}
+                        {!useStockControl && (
+                          <span className="text-[9px] font-mono text-gray-500 font-bold">Est: {product.stock}</span>
+                        )}
                       </div>
-                      <h4 className="font-sans font-medium text-gray-800 text-sm truncate mt-1">
+                      <h4 className="font-sans font-semibold text-gray-800 text-[15px] truncate mt-1">
                         {product.name}
                       </h4>
                     </div>
                   </div>
 
                   <div className="flex items-center gap-3 shrink-0">
-                    <span className="font-sans font-bold text-[#1D4ED8] text-sm">
+                    <span className="font-sans font-bold text-[#1D4ED8] text-base">
                       R$ {product.price.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                     </span>
                     <div
                       className={`py-1.5 px-3 font-sans text-xs font-semibold rounded-xl transition-colors ${
-                        product.stock <= 0 
+                        product.stock <= 0 && useStockControl
                           ? 'bg-gray-200 text-gray-400' 
                           : quantityInCart > 0 
                             ? 'bg-emerald-600 text-white' 
                             : 'bg-[#1D4ED8] text-white'
                       }`}
                     >
-                      {product.stock <= 0 ? 'Esgotado' : quantityInCart > 0 ? `${quantityInCart}x` : '+ Add'}
+                      {product.stock <= 0 && useStockControl ? 'Esgotado' : quantityInCart > 0 ? `${quantityInCart}x` : '+ Add'}
                     </div>
                   </div>
                 </div>
