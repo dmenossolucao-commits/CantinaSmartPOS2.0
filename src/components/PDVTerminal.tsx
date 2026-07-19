@@ -265,10 +265,22 @@ export default function PDVTerminal({
       }
     }
 
+    const removeUndefined = (obj: any): any => {
+      if (Array.isArray(obj)) {
+        return obj.map(removeUndefined);
+      } else if (obj !== null && typeof obj === 'object') {
+        return Object.entries(obj).reduce((acc, [key, val]) => {
+          if (val !== undefined) {
+            acc[key] = removeUndefined(val);
+          }
+          return acc;
+        }, {} as any);
+      }
+      return obj;
+    };
+
     const tx: Transaction = {
       id: txId,
-      clientId: selectedClient?.id,
-      clientName: selectedClient?.name,
       items: cart.map(item => ({
         productId: item.product.id,
         productName: item.product.name,
@@ -279,12 +291,28 @@ export default function PDVTerminal({
       total: cartTotal,
       paymentMethod: method,
       timestamp: new Date().toISOString(),
-      status: txStatus,
-      saldo_restante: txSaldoRestante
+      status: txStatus
     };
 
-    onCompleteSale(tx, updatedClients, updatedProducts);
-    setCompletedTransaction(tx);
+    if (selectedClient?.id) {
+      tx.clientId = selectedClient.id;
+    }
+    if (selectedClient?.name) {
+      tx.clientName = selectedClient.name;
+    }
+    if (txSaldoRestante !== undefined) {
+      tx.saldo_restante = txSaldoRestante;
+    }
+    if (method === 'prazo') {
+      tx.dueDate = calculatedDueDate.toISOString();
+    }
+
+    const txClean = removeUndefined(tx);
+    const updatedClientsClean = updatedClients.map(c => removeUndefined(c));
+    const updatedProductsClean = updatedProducts.map(p => removeUndefined(p));
+
+    onCompleteSale(txClean, updatedClientsClean, updatedProductsClean);
+    setCompletedTransaction(txClean);
     setCheckoutStep('success');
 
     // Trigger push notification simulation
