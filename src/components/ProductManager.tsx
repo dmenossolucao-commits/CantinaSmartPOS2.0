@@ -17,7 +17,6 @@ interface ProductManagerProps {
   onUpdateProduct: (product: Product) => void;
   onDeleteProduct: (productId: string) => void;
   onZeroStock?: () => void;
-  useStockControl?: boolean;
 }
 
 export default function ProductManager({ 
@@ -25,8 +24,7 @@ export default function ProductManager({
   onAddProduct, 
   onUpdateProduct, 
   onDeleteProduct,
-  onZeroStock,
-  useStockControl = true
+  onZeroStock
 }: ProductManagerProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('Todos');
@@ -209,13 +207,6 @@ export default function ProductManager({
               </button>
             </div>
           </div>
-
-          {!useStockControl && (
-            <div className="bg-amber-50 border border-amber-200 text-amber-800 px-3 py-2 rounded-xl text-xs font-sans flex items-center gap-2">
-              <AlertTriangle size={14} className="text-amber-600 animate-pulse shrink-0" />
-              <span>O controle de estoque está <strong>desativado</strong> nas configurações do PDV. Os itens podem ser vendidos sem restrição de quantidade no caixa.</span>
-            </div>
-          )}
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
             {/* Search */}
