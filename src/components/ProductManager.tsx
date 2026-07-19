@@ -7,7 +7,7 @@ import React, { useState, useMemo } from 'react';
 import { Product } from '../types';
 import { 
   Package, Search, Plus, Filter, Trash2, Edit2, AlertTriangle, 
-  CheckCircle, ArrowUpDown, X, Sparkles, ToggleLeft, ToggleRight, Settings 
+  CheckCircle, ArrowUpDown, X, Sparkles 
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -17,8 +17,6 @@ interface ProductManagerProps {
   onUpdateProduct: (product: Product) => void;
   onDeleteProduct: (productId: string) => void;
   onZeroStock?: () => void;
-  useStockControl?: boolean;
-  onToggleStockControl?: () => void;
 }
 
 export default function ProductManager({ 
@@ -26,9 +24,7 @@ export default function ProductManager({
   onAddProduct, 
   onUpdateProduct, 
   onDeleteProduct,
-  onZeroStock,
-  useStockControl = true,
-  onToggleStockControl
+  onZeroStock
 }: ProductManagerProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('Todos');
@@ -54,45 +50,7 @@ export default function ProductManager({
       }
       const reader = new FileReader();
       reader.onloadend = () => {
-        const img = new Image();
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          let width = img.width;
-          let height = img.height;
-          
-          // Max dimensions for the product card
-          const MAX_WIDTH = 400;
-          const MAX_HEIGHT = 400;
-          
-          if (width > height) {
-            if (width > MAX_WIDTH) {
-              height = Math.round((height * MAX_WIDTH) / width);
-              width = MAX_WIDTH;
-            }
-          } else {
-            if (height > MAX_HEIGHT) {
-              width = Math.round((width * MAX_HEIGHT) / height);
-              height = MAX_HEIGHT;
-            }
-          }
-          
-          canvas.width = width;
-          canvas.height = height;
-          
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            ctx.drawImage(img, 0, 0, width, height);
-            // Compress with JPEG quality 0.7 which reduces size massively (typically under 30KB)
-            const compressedUrl = canvas.toDataURL('image/jpeg', 0.7);
-            setFormImageUrl(compressedUrl);
-          } else {
-            setFormImageUrl(reader.result as string);
-          }
-        };
-        img.onerror = () => {
-          setFormImageUrl(reader.result as string);
-        };
-        img.src = reader.result as string;
+        setFormImageUrl(reader.result as string);
       };
       reader.readAsDataURL(file);
     }
@@ -143,9 +101,13 @@ export default function ProductManager({
         price: priceNum,
         category: formCategory,
         stock: Number(formStock),
-        minStock: Math.max(0, Number(formMinStock) || 0),
-        imageUrl: formImageUrl || undefined
+        minStock: Number(formMinStock),
       };
+      if (formImageUrl) {
+        updated.imageUrl = formImageUrl;
+      } else {
+        delete updated.imageUrl;
+      }
       onUpdateProduct(updated);
     } else {
       // Add
@@ -155,9 +117,11 @@ export default function ProductManager({
         price: priceNum,
         category: formCategory,
         stock: Number(formStock),
-        minStock: Math.max(0, Number(formMinStock) || 0),
-        imageUrl: formImageUrl || undefined
+        minStock: Number(formMinStock),
       };
+      if (formImageUrl) {
+        newP.imageUrl = formImageUrl;
+      }
       onAddProduct(newP);
     }
 
@@ -188,7 +152,7 @@ export default function ProductManager({
     setFormPrice(product.price.toString());
     setFormCategory(product.category);
     setFormStock(product.stock.toString());
-    setFormMinStock(Math.max(0, product.minStock || 0).toString());
+    setFormMinStock(product.minStock.toString());
     setFormImageUrl(product.imageUrl || '');
     setShowModal(true);
   };
@@ -226,21 +190,6 @@ export default function ProductManager({
               Cardápio e Estoque da Cantina
             </h2>
             <div className="flex items-center gap-2 shrink-0">
-              {onToggleStockControl && (
-                <button
-                  id="toggle-stock-control-btn"
-                  onClick={onToggleStockControl}
-                  className={`py-1.5 px-3 border rounded-xl text-xs font-sans font-bold transition-colors flex items-center gap-1.5 shadow-sm ${
-                    useStockControl 
-                      ? 'bg-teal-50 hover:bg-teal-100 border-teal-200 text-teal-700' 
-                      : 'bg-amber-50 hover:bg-amber-100 border-amber-200 text-amber-700'
-                  }`}
-                  title="Tornar o uso de estoque opcional ou obrigatório no PDV"
-                >
-                  {useStockControl ? <ToggleRight size={15} /> : <ToggleLeft size={15} />}
-                  Estoque: {useStockControl ? 'Obrigatório' : 'Opcional'}
-                </button>
-              )}
               <button
                 id="zero-stock-btn"
                 onClick={handleZeroStockClick}
@@ -484,9 +433,7 @@ export default function ProductManager({
 
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="text-[10px] text-gray-500 font-sans block mb-1">
-                      {editingProduct ? 'Estoque Atual *' : 'Estoque Inicial *'}
-                    </label>
+                    <label className="text-[10px] text-gray-500 font-sans block mb-1">Estoque Inicial *</label>
                     <input
                       id="form-product-stock"
                       type="number"

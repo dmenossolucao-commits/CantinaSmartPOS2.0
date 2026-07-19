@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { TENANT_CONFIG } from '../config/tenant';
+
 /**
  * Generates a real standards-compliant Brazilian PIX Static EMV payload (Copia e Cola).
  * 
@@ -14,8 +16,8 @@
 export function generatePixPayload(
   key: string,
   amount: number,
-  merchantName = 'CANTINA UDV',
-  merchantCity = 'PORTO VELHO'
+  merchantName = TENANT_CONFIG.PIX_MERCHANT_NAME,
+  merchantCity = TENANT_CONFIG.PIX_MERCHANT_CITY
 ): string {
   const cleanKey = key.trim();
   const formattedAmount = amount.toFixed(2);

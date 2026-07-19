@@ -1,10 +1,12 @@
-import { db, auth } from './firebase';
+import { db } from './firebase';
 import { 
-  collection, doc, getDocs, setDoc, writeBatch, deleteDoc, updateDoc, onSnapshot, query, where
+  collection, doc, getDoc, getDocs, setDoc, writeBatch, deleteDoc
 } from 'firebase/firestore';
-import { Product, Client, Transaction, BackupHistory, SupportTicket, NotificationLog, AppUser } from '../types';
-import { withTenant, resolveCollectionPath, resolveCurrentTenantId } from './tenantService';
-import { companyService } from './companyService';
+import { 
+  Product, Client, Transaction, BackupHistory, SupportTicket, NotificationLog, AppUser,
+  AdminSecuritySettings, AdminSecurityLog, ProviderChangeLog, PaymentMessageLog 
+} from '../types';
+import { INITIAL_CLIENTS, INITIAL_TRANSACTIONS } from '../data';
 
 export enum OperationType {
   CREATE = 'create',
@@ -32,67 +34,27 @@ export interface FirestoreErrorInfo {
   };
 }
 
-export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null): never {
-  const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
-    authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-      isAnonymous: auth.currentUser?.isAnonymous,
-      tenantId: auth.currentUser?.tenantId,
-      providerInfo: auth.currentUser?.providerData?.map(provider => ({
-        providerId: provider.providerId,
-        email: provider.email,
-      })) || []
-    },
+export function handleFirestoreError(error: any, operationType: OperationType, path: string | null): never {
+  console.error('--- FIRESTORE ERROR DETECTED ---');
+  console.error('Operation:', operationType);
+  console.error('Path:', path);
+  if (error) {
+    console.error('Error Code:', error.code || 'NO_CODE');
+    console.error('Error Message:', error.message || String(error));
+    console.error('Error Stack:', error.stack || 'NO_STACK');
+  } else {
+    console.error('Unknown Error');
+  }
+  console.error('--------------------------------');
+
+  const errInfo = {
+    code: error?.code || 'unknown',
+    message: error?.message || String(error),
+    stack: error?.stack,
     operationType,
     path
   };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
   throw new Error(JSON.stringify(errInfo));
-}
-
-export async function safeSetDoc(docRef: any, data: any, collectionPath: string) {
-  try {
-    await setDoc(docRef, data);
-  } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, collectionPath);
-  }
-}
-
-export async function safeDeleteDoc(docRef: any, collectionPath: string) {
-  try {
-    await deleteDoc(docRef);
-  } catch (err) {
-    handleFirestoreError(err, OperationType.DELETE, collectionPath);
-  }
-}
-
-export async function safeUpdateDoc(docRef: any, data: any, collectionPath: string) {
-  try {
-    await updateDoc(docRef, data);
-  } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, collectionPath);
-  }
-}
-
-export async function safeCommit(batch: any, collectionPath: string) {
-  try {
-    await batch.commit();
-  } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, collectionPath);
-  }
-}
-
-export function wrapOnError(onError: (err: any) => void, operationType: OperationType, path: string | null) {
-  return (err: any) => {
-    try {
-      handleFirestoreError(err, operationType, path);
-    } catch (wrappedErr) {
-      onError(wrappedErr);
-    }
-  };
 }
 
 /**
@@ -109,666 +71,603 @@ export async function checkAndPopulateInitialData(
   localPixKey: string
 ) {
   try {
-    // Ensure the default company is created and all existing/current users are associated with it
-    await companyService.initializeDefaultCompany();
-    await companyService.associateUsersToDefaultCompany();
-
-    const userPath = resolveCollectionPath('users');
-    const prodPath = resolveCollectionPath('products');
-    const clientPath = resolveCollectionPath('clients');
-    const settingsPath = resolveCollectionPath('settings');
-    const txPath = resolveCollectionPath('transactions');
-    const backupPath = resolveCollectionPath('backups');
-    const ticketPath = resolveCollectionPath('tickets');
-    const notifPath = resolveCollectionPath('notifications');
-
-    // 0. Fetch existing tables to determine if db is already in use using resolved paths
-    let userSnap, prodSnap, clientSnap, settingsSnap;
+    // 0. Users (seed admin if not present)
+    let userSnap;
     try {
-      userSnap = await getDocs(collection(db, userPath));
+      userSnap = await getDocs(collection(db, 'users'));
     } catch (err) {
-      handleFirestoreError(err, OperationType.LIST, userPath);
-    }
-    try {
-      prodSnap = await getDocs(collection(db, prodPath));
-    } catch (err) {
-      handleFirestoreError(err, OperationType.LIST, prodPath);
-    }
-    try {
-      clientSnap = await getDocs(collection(db, clientPath));
-    } catch (err) {
-      handleFirestoreError(err, OperationType.LIST, clientPath);
-    }
-    try {
-      settingsSnap = await getDocs(collection(db, settingsPath));
-    } catch (err) {
-      handleFirestoreError(err, OperationType.LIST, settingsPath);
+      handleFirestoreError(err, OperationType.GET, 'users');
     }
 
-    const tenantId = resolveCurrentTenantId();
-    const isSystemInitialized = settingsSnap.docs.some(doc => doc.id === 'system' || doc.id === `system_${tenantId}`);
-    const isAnyDataPresent = !prodSnap.empty || !clientSnap.empty || isSystemInitialized;
-
-    // Seed default administrator user if not present
     const adminExists = userSnap.docs.some(doc => {
       const u = doc.data() as AppUser;
       return u.username === 'admin' || u.role === 'admin';
     });
     if (!adminExists) {
       console.log('Seeding default administrator user...');
-      const adminUser: AppUser = withTenant({
+      const adminUser: AppUser = {
         id: 'u_admin',
         username: 'admin',
         name: 'Administrador',
         role: 'admin',
         passwordHash: '8848',
         createdAt: new Date().toISOString()
-      });
-      await safeSetDoc(doc(db, userPath, adminUser.id), adminUser, userPath);
+      };
+      try {
+        await setDoc(doc(db, 'users', adminUser.id), adminUser);
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, `users/${adminUser.id}`);
+      }
     }
 
-    if (!isSystemInitialized) {
-      await safeSetDoc(doc(db, settingsPath, `system_${tenantId}`), {
-        key: 'system_initialized',
-        seeded: true,
-        seededAt: new Date().toISOString(),
-        companyId: tenantId
-      }, settingsPath);
+    // Seeding admin security settings
+    const adminSecurityDocRef = doc(db, 'settings', 'admin_security');
+    const adminSecuritySnap = await getDoc(adminSecurityDocRef);
+    if (!adminSecuritySnap.exists()) {
+      console.log('Seeding default admin security credentials...');
+      const defaultSecurity: AdminSecuritySettings = {
+        passwordHash: '8b2aae9771701faeaf731c84dbd88bec5d02c240a21741046fafccdfc7877ca8', // SHA-256 of F@b486875
+        failedAttempts: 0,
+        blockedUntil: null,
+        updatedAt: new Date().toISOString()
+      };
+      await setDoc(adminSecurityDocRef, defaultSecurity);
     }
 
     // 1. Products
+    let prodSnap;
+    try {
+      prodSnap = await getDocs(collection(db, 'products'));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.GET, 'products');
+    }
+
     if (prodSnap.empty && localProducts.length > 0) {
       console.log('Populating initial products to Firestore cloud...');
       const batch = writeBatch(db);
       localProducts.forEach(p => {
-        const tenantProduct = withTenant(p);
-        batch.set(doc(db, prodPath, tenantProduct.id), tenantProduct);
+        batch.set(doc(db, 'products', p.id), p);
       });
-      await safeCommit(batch, prodPath);
+      try {
+        await batch.commit();
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, 'products (batch)');
+      }
     }
 
     // 2. Clients
-    if (clientSnap.empty && localClients.length > 0) {
-      console.log('Populating clients to Firestore cloud...');
+    let clientSnap;
+    try {
+      clientSnap = await getDocs(collection(db, 'clients'));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.GET, 'clients');
+    }
+
+    const existingClientIds = new Set(clientSnap.docs.map(doc => doc.id));
+    // Merge source of truth (localClients + INITIAL_CLIENTS) to ensure they are all checked
+    const allExpectedClients = [...localClients];
+    INITIAL_CLIENTS.forEach(ic => {
+      if (!allExpectedClients.some(ac => ac.id === ic.id)) {
+        allExpectedClients.push(ic);
+      }
+    });
+
+    const missingClients = allExpectedClients.filter(c => !existingClientIds.has(c.id));
+
+    if (missingClients.length > 0) {
+      console.log(`Populating ${missingClients.length} missing/new clients to Firestore cloud...`);
       const batch = writeBatch(db);
-      localClients.forEach(c => {
-        const tenantClient = withTenant(c);
-        batch.set(doc(db, clientPath, tenantClient.id), tenantClient);
+      missingClients.forEach(c => {
+        batch.set(doc(db, 'clients', c.id), c);
       });
-      await safeCommit(batch, clientPath);
+      try {
+        await batch.commit();
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, 'clients (batch)');
+      }
     }
 
     // 3. Transactions
     let txSnap;
     try {
-      txSnap = await getDocs(collection(db, txPath));
+      txSnap = await getDocs(collection(db, 'transactions'));
     } catch (err) {
-      handleFirestoreError(err, OperationType.LIST, txPath);
+      handleFirestoreError(err, OperationType.GET, 'transactions');
     }
-    if (txSnap.empty && localTransactions.length > 0) {
-      console.log('Populating transactions to Firestore cloud...');
+
+    const existingTxIds = new Set(txSnap.docs.map(doc => doc.id));
+    // Merge source of truth (localTransactions + INITIAL_TRANSACTIONS) to ensure they are all checked
+    const allExpectedTransactions = [...localTransactions];
+    INITIAL_TRANSACTIONS.forEach(it => {
+      if (!allExpectedTransactions.some(at => at.id === it.id)) {
+        allExpectedTransactions.push(it);
+      }
+    });
+
+    const missingTransactions = allExpectedTransactions.filter(t => !existingTxIds.has(t.id));
+
+    if (missingTransactions.length > 0) {
+      console.log(`Populating ${missingTransactions.length} missing/new transactions to Firestore cloud...`);
       const chunk = <T>(arr: T[], size: number): T[][] => 
         Array.from({ length: Math.ceil(arr.length / size) }, (v, i) =>
           arr.slice(i * size, i * size + size)
         );
       
-      const chunks = chunk(localTransactions, 200);
+      const chunks = chunk(missingTransactions, 200);
       for (const itemChunk of chunks) {
         const batch = writeBatch(db);
         itemChunk.forEach(t => {
-          const tenantTx = withTenant(t);
-          batch.set(doc(db, txPath, tenantTx.id), tenantTx);
+          batch.set(doc(db, 'transactions', t.id), t);
         });
-        await safeCommit(batch, txPath);
+        try {
+          await batch.commit();
+        } catch (err) {
+          handleFirestoreError(err, OperationType.WRITE, 'transactions (batch)');
+        }
       }
     }
 
     // 4. Backups
     let backupSnap;
     try {
-      backupSnap = await getDocs(collection(db, backupPath));
+      backupSnap = await getDocs(collection(db, 'backups'));
     } catch (err) {
-      handleFirestoreError(err, OperationType.LIST, backupPath);
+      handleFirestoreError(err, OperationType.GET, 'backups');
     }
+
     if (backupSnap.empty && localBackups.length > 0) {
       const batch = writeBatch(db);
       localBackups.forEach(b => {
-        const tenantBackup = withTenant(b);
-        batch.set(doc(db, backupPath, tenantBackup.id), tenantBackup);
+        batch.set(doc(db, 'backups', b.id), b);
       });
-      await safeCommit(batch, backupPath);
+      try {
+        await batch.commit();
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, 'backups (batch)');
+      }
     }
 
     // 5. Support Tickets
     let ticketSnap;
     try {
-      ticketSnap = await getDocs(collection(db, ticketPath));
+      ticketSnap = await getDocs(collection(db, 'tickets'));
     } catch (err) {
-      handleFirestoreError(err, OperationType.LIST, ticketPath);
+      handleFirestoreError(err, OperationType.GET, 'tickets');
     }
+
     if (ticketSnap.empty && localTickets.length > 0) {
       const batch = writeBatch(db);
       localTickets.forEach(t => {
-        const tenantTicket = withTenant(t);
-        batch.set(doc(db, ticketPath, tenantTicket.id), tenantTicket);
+        batch.set(doc(db, 'tickets', t.id), t);
       });
-      await safeCommit(batch, ticketPath);
+      try {
+        await batch.commit();
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, 'tickets (batch)');
+      }
     }
 
     // 6. Notification logs
     let notifSnap;
     try {
-      notifSnap = await getDocs(collection(db, notifPath));
+      notifSnap = await getDocs(collection(db, 'notifications'));
     } catch (err) {
-      handleFirestoreError(err, OperationType.LIST, notifPath);
+      handleFirestoreError(err, OperationType.GET, 'notifications');
     }
+
     if (notifSnap.empty && localNotifications.length > 0) {
       const batch = writeBatch(db);
       localNotifications.forEach(n => {
-        const tenantNotification = withTenant(n);
-        batch.set(doc(db, notifPath, tenantNotification.id), tenantNotification);
+        batch.set(doc(db, 'notifications', n.id), n);
       });
-      await safeCommit(batch, notifPath);
+      try {
+        await batch.commit();
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, 'notifications (batch)');
+      }
     }
 
     // 7. Pix key settings
-    const pixDoc = doc(db, settingsPath, `pix_${tenantId}`);
-    const hasPixForTenant = settingsSnap.docs.some(doc => doc.id === `pix_${tenantId}` || doc.id === 'pix');
-    if (!hasPixForTenant) {
-      await safeSetDoc(pixDoc, { key: localPixKey, companyId: tenantId }, settingsPath);
+    const pixDoc = doc(db, 'settings', 'pix');
+    let settingsSnap;
+    try {
+      settingsSnap = await getDocs(collection(db, 'settings'));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.GET, 'settings');
     }
 
-    // 8. Mark as seeded
-    await safeSetDoc(doc(db, settingsPath, `system_${tenantId}`), {
-      key: 'system_initialized',
-      seeded: true,
-      seededAt: new Date().toISOString(),
-      companyId: tenantId
-    }, settingsPath);
+    if (settingsSnap.empty) {
+      try {
+        await setDoc(pixDoc, { key: localPixKey });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, 'settings/pix');
+      }
+    }
   } catch (err) {
     console.error('Error migrating/initializing data to Firestore:', err);
+    throw err;
   }
 }
 
 // Product helpers
 export async function saveProductInCloud(p: Product) {
-  const tenantProduct = withTenant(p);
-  const path = resolveCollectionPath('products');
-  await safeSetDoc(doc(db, path, tenantProduct.id), tenantProduct, path);
+  try {
+    await setDoc(doc(db, 'products', p.id), p);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, `products/${p.id}`);
+  }
 }
 
 export async function deleteProductInCloud(productId: string) {
-  const path = resolveCollectionPath('products');
-  await safeDeleteDoc(doc(db, path, productId), path);
+  try {
+    await deleteDoc(doc(db, 'products', productId));
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, `products/${productId}`);
+  }
 }
 
 // Client helpers
 export async function saveClientInCloud(c: Client) {
-  const tenantClient = withTenant(c);
-  const path = resolveCollectionPath('clients');
-  await safeSetDoc(doc(db, path, tenantClient.id), tenantClient, path);
+  try {
+    await setDoc(doc(db, 'clients', c.id), c);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, `clients/${c.id}`);
+  }
 }
 
 export async function deleteClientInCloud(clientId: string) {
-  const path = resolveCollectionPath('clients');
-  await safeDeleteDoc(doc(db, path, clientId), path);
+  try {
+    await deleteDoc(doc(db, 'clients', clientId));
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, `clients/${clientId}`);
+  }
 }
 
 // Transaction helpers
 export async function saveTransactionInCloud(t: Transaction) {
-  const tenantTx = withTenant(t);
-  const path = resolveCollectionPath('transactions');
-  await safeSetDoc(doc(db, path, tenantTx.id), tenantTx, path);
+  try {
+    await setDoc(doc(db, 'transactions', t.id), t);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, `transactions/${t.id}`);
+  }
 }
 
 // Notification helpers
 export async function saveNotificationInCloud(n: NotificationLog) {
-  const notificationWithRead = { read: false, ...n };
-  const tenantNotification = withTenant(notificationWithRead);
-  const path = resolveCollectionPath('notifications');
-  await safeSetDoc(doc(db, path, tenantNotification.id), tenantNotification, path);
-}
-
-export async function markNotificationAsReadInCloud(notificationId: string) {
-  const path = resolveCollectionPath('notifications');
-  await safeUpdateDoc(doc(db, path, notificationId), { read: true }, path);
-}
-
-export async function markAllNotificationsAsReadInCloud(notifications: NotificationLog[]) {
-  const batch = writeBatch(db);
-  const path = resolveCollectionPath('notifications');
-  notifications.forEach(n => {
-    if (!n.read) {
-      batch.update(doc(db, path, n.id), { read: true });
-    }
-  });
-  await safeCommit(batch, path);
+  try {
+    await setDoc(doc(db, 'notifications', n.id), n);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, `notifications/${n.id}`);
+  }
 }
 
 // Backup helpers
 export async function saveBackupInCloud(b: BackupHistory) {
-  const tenantBackup = withTenant(b);
-  const path = resolveCollectionPath('backups');
-  await safeSetDoc(doc(db, path, tenantBackup.id), tenantBackup, path);
+  try {
+    await setDoc(doc(db, 'backups', b.id), b);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, `backups/${b.id}`);
+  }
 }
 
 // Support ticket helpers
 export async function saveTicketInCloud(t: SupportTicket) {
-  const tenantTicket = withTenant(t);
-  const path = resolveCollectionPath('tickets');
-  await safeSetDoc(doc(db, path, tenantTicket.id), tenantTicket, path);
+  try {
+    await setDoc(doc(db, 'tickets', t.id), t);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, `tickets/${t.id}`);
+  }
 }
 
 // Settings helpers
 export async function savePixKeyInCloud(key: string) {
-  const tenantId = resolveCurrentTenantId();
-  const path = resolveCollectionPath('settings');
-  await safeSetDoc(doc(db, path, `pix_${tenantId}`), { key, companyId: tenantId }, path);
+  try {
+    await setDoc(doc(db, 'settings', 'pix'), { key });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, 'settings/pix');
+  }
 }
 
 // Complete sales with atomic batch transactions
-export async function completeSaleInCloud(tx: Transaction, updatedClients: Client[], updatedProducts: Product[]) {
+export async function completeSaleInCloud(
+  tx: Transaction, 
+  updatedClients: Client[], 
+  updatedProducts: Product[],
+  updatedTransactions?: Transaction[]
+) {
   const batch = writeBatch(db);
-  const txPath = resolveCollectionPath('transactions');
-  const clientPath = resolveCollectionPath('clients');
-  const prodPath = resolveCollectionPath('products');
   
   // Save transaction
-  const tenantTx = withTenant(tx);
-  batch.set(doc(db, txPath, tenantTx.id), tenantTx);
+  batch.set(doc(db, 'transactions', tx.id), tx);
 
-  // Update relevant clients - ONLY the one associated with the transaction (if any)
-  if (tx.clientId) {
-    const associatedClient = updatedClients.find(c => c.id === tx.clientId);
-    if (associatedClient) {
-      const tenantClient = withTenant(associatedClient);
-      batch.set(doc(db, clientPath, tenantClient.id), tenantClient);
-    }
-  }
-
-  // Update relevant products (stocks) - ONLY those whose stocks actually changed (present in tx.items)
-  const purchasedProductIds = new Set(tx.items.map(item => item.productId));
-  updatedProducts.forEach(p => {
-    if (purchasedProductIds.has(p.id)) {
-      const tenantProduct = withTenant(p);
-      batch.set(doc(db, prodPath, tenantProduct.id), tenantProduct);
-    }
+  // Update relevant clients
+  updatedClients.forEach(c => {
+    batch.set(doc(db, 'clients', c.id), c);
   });
 
-  await safeCommit(batch, txPath);
+  // Update relevant products (stocks)
+  updatedProducts.forEach(p => {
+    batch.set(doc(db, 'products', p.id), p);
+  });
+
+  // Update other transactions if provided
+  if (updatedTransactions && updatedTransactions.length > 0) {
+    updatedTransactions.forEach(t => {
+      batch.set(doc(db, 'transactions', t.id), t);
+    });
+  }
+
+  try {
+    await batch.commit();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, 'completeSale batch');
+  }
 }
 
 // Admin Commands
 export async function zeroStockInCloud(products: Product[]) {
   const batch = writeBatch(db);
-  const path = resolveCollectionPath('products');
   products.forEach(p => {
-    batch.update(doc(db, path, p.id), { stock: 0 });
+    batch.update(doc(db, 'products', p.id), { stock: 0 });
   });
-  await safeCommit(batch, path);
+  try {
+    await batch.commit();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, 'zeroStock batch');
+  }
 }
 
-// Zero Client balances helper
 export async function zeroClientsInCloud(clients: Client[]) {
   const batch = writeBatch(db);
-  const path = resolveCollectionPath('clients');
   clients.forEach(c => {
-    batch.update(doc(db, path, c.id), { balance: 0 });
+    batch.update(doc(db, 'clients', c.id), { balance: 0 });
   });
-  await safeCommit(batch, path);
+  try {
+    await batch.commit();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, 'zeroClients batch');
+  }
 }
 
 // Cancel Sale Transaction
 export async function cancelSaleInCloud(tx: Transaction, products: Product[], clients: Client[]) {
-  const txPath = resolveCollectionPath('transactions');
-  const prodPath = resolveCollectionPath('products');
-  const clientPath = resolveCollectionPath('clients');
+  const batch = writeBatch(db);
 
   // 1. Cancel transaction
-  await safeUpdateDoc(doc(db, txPath, tx.id), { status: 'cancelado' }, txPath);
+  batch.update(doc(db, 'transactions', tx.id), { status: 'cancelado' });
 
-  // 2. Restore product stock and revert balance
-  const promises: Promise<void>[] = [];
-
+  // 2. Restore product stock
   tx.items.forEach(item => {
     const p = products.find(prod => prod.id === item.productId);
     if (p) {
-      promises.push(
-        safeUpdateDoc(doc(db, prodPath, p.id), { stock: p.stock + item.quantity }, prodPath)
-          .catch(err => console.warn(`Could not restore stock for product ${p.id}:`, err))
-      );
+      batch.update(doc(db, 'products', p.id), { stock: p.stock + item.quantity });
     }
   });
 
+  // 3. Revert client balance if credit line (prazo)
   if (tx.clientId && tx.paymentMethod === 'prazo') {
     const c = clients.find(cl => cl.id === tx.clientId);
     if (c) {
-      promises.push(
-        safeUpdateDoc(doc(db, clientPath, c.id), { balance: c.balance + tx.total }, clientPath)
-          .catch(err => console.warn(`Could not revert balance for client ${c.id}:`, err))
-      );
+      batch.update(doc(db, 'clients', c.id), { balance: c.balance + tx.total });
     }
   }
 
-  if (promises.length > 0) {
-    await Promise.all(promises);
+  try {
+    await batch.commit();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, 'cancelSale batch');
   }
 }
 
 // Delete Sale Transaction permanently
 export async function deleteSaleInCloud(tx: Transaction, products: Product[], clients: Client[]) {
-  const txPath = resolveCollectionPath('transactions');
-  const prodPath = resolveCollectionPath('products');
-  const clientPath = resolveCollectionPath('clients');
+  const batch = writeBatch(db);
 
-  // 1. Delete transaction first
-  await safeDeleteDoc(doc(db, txPath, tx.id), txPath);
+  // 1. Delete transaction
+  batch.delete(doc(db, 'transactions', tx.id));
 
   // 2. Restore stock and revert balance only if not already cancelled
   if (tx.status !== 'cancelado') {
-    const promises: Promise<void>[] = [];
-    
     tx.items.forEach(item => {
       const p = products.find(prod => prod.id === item.productId);
       if (p) {
-        promises.push(
-          safeUpdateDoc(doc(db, prodPath, p.id), { stock: p.stock + item.quantity }, prodPath)
-            .catch(err => console.warn(`Could not restore stock for product ${p.id}:`, err))
-        );
+        batch.update(doc(db, 'products', p.id), { stock: p.stock + item.quantity });
       }
     });
 
     if (tx.clientId && tx.paymentMethod === 'prazo') {
       const c = clients.find(cl => cl.id === tx.clientId);
       if (c) {
-        promises.push(
-          safeUpdateDoc(doc(db, clientPath, c.id), { balance: c.balance + tx.total }, clientPath)
-            .catch(err => console.warn(`Could not revert balance for client ${c.id}:`, err))
-        );
+        batch.update(doc(db, 'clients', c.id), { balance: c.balance + tx.total });
       }
     }
-    
-    if (promises.length > 0) {
-      await Promise.all(promises);
-    }
+  }
+
+  try {
+    await batch.commit();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, 'deleteSale batch');
   }
 }
 
-// Clear transactions with chunking to avoid Firestore 500-operation writeBatch limit
+// Clear transactions
 export async function clearAllTransactionsInCloud(transactions: Transaction[]) {
-  const chunk = <T>(arr: T[], size: number): T[][] => 
-    Array.from({ length: Math.ceil(arr.length / size) }, (v, i) =>
-      arr.slice(i * size, i * size + size)
-    );
-  
-  const chunks = chunk(transactions, 400);
-  const path = resolveCollectionPath('transactions');
-  for (const itemChunk of chunks) {
-    const batch = writeBatch(db);
-    itemChunk.forEach(t => {
-      batch.delete(doc(db, path, t.id));
-    });
-    await safeCommit(batch, path);
+  const batch = writeBatch(db);
+  transactions.forEach(t => {
+    batch.delete(doc(db, 'transactions', t.id));
+  });
+  try {
+    await batch.commit();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, 'clearAllTransactions batch');
   }
 }
 
 // Mobile Portal: Balance Add Credit and Transaction
 export async function mobileAddCreditInCloud(clientId: string, amount: number, currentBalance: number, tx: Transaction) {
   const batch = writeBatch(db);
-  const clientPath = resolveCollectionPath('clients');
-  const txPath = resolveCollectionPath('transactions');
   
-  batch.update(doc(db, clientPath, clientId), { balance: currentBalance + amount });
+  batch.update(doc(db, 'clients', clientId), { balance: currentBalance + amount });
+  batch.set(doc(db, 'transactions', tx.id), tx);
   
-  const tenantTx = withTenant(tx);
-  batch.set(doc(db, txPath, tenantTx.id), tenantTx);
-  
-  await safeCommit(batch, clientPath);
+  try {
+    await batch.commit();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, 'mobileAddCredit batch');
+  }
 }
 
 // User Helpers
 export async function saveUserInCloud(u: AppUser) {
-  const tenantUser = withTenant(u);
-  const path = resolveCollectionPath('users');
-  await safeSetDoc(doc(db, path, tenantUser.id), tenantUser, path);
+  try {
+    await setDoc(doc(db, 'users', u.id), u);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, `users/${u.id}`);
+  }
 }
 
 export async function deleteUserInCloud(userId: string) {
-  const path = resolveCollectionPath('users');
-  await safeDeleteDoc(doc(db, path, userId), path);
+  try {
+    await deleteDoc(doc(db, 'users', userId));
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, `users/${userId}`);
+  }
 }
 
-// Real-time subscription helper functions for central data layer access
-export function subscribeUsers(
-  onUpdate: (users: AppUser[]) => void,
-  onError: (err: any) => void
-): () => void {
-  const tenantId = resolveCurrentTenantId();
-  const path = resolveCollectionPath('users');
-  return onSnapshot(
-    query(
-      collection(db, path),
-      where('companyId', '==', tenantId)
-    ),
-    (snap) => {
-      const list: AppUser[] = [];
-      snap.forEach((docSnap) => {
-        const data = docSnap.data() as AppUser;
-        list.push({
-          ...data,
-          companyId: data.companyId || tenantId
-        });
-      });
-      onUpdate(list);
-    },
-    wrapOnError(onError, OperationType.GET, path)
-  );
+// Smart Cobrança helpers
+export async function saveSmartCobrancaSettingsInCloud(s: any) {
+  try {
+    await setDoc(doc(db, 'settings', 'smart_cobranca'), s);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, 'settings/smart_cobranca');
+  }
 }
 
-export function subscribeProducts(
-  onUpdate: (products: Product[]) => void,
-  onError: (err: any) => void
-): () => void {
-  const tenantId = resolveCurrentTenantId();
-  const path = resolveCollectionPath('products');
-  return onSnapshot(
-    query(
-      collection(db, path),
-      where('companyId', '==', tenantId)
-    ),
-    (snap) => {
-      const list: Product[] = [];
-      snap.forEach((docSnap) => {
-        const data = docSnap.data() as Product;
-        list.push({
-          ...data,
-          companyId: data.companyId || tenantId
-        });
-      });
-      onUpdate(list);
-    },
-    wrapOnError(onError, OperationType.GET, path)
-  );
+export async function saveSmartCollectionInCloud(sc: any) {
+  try {
+    const sDocRef = doc(db, 'settings', 'smart_collections');
+    const sSnap = await getDoc(sDocRef);
+    let list: any[] = [];
+    if (sSnap.exists()) {
+      list = sSnap.data().list || [];
+    }
+    const index = list.findIndex((item: any) => item.id === sc.id);
+    if (index >= 0) {
+      list[index] = sc;
+    } else {
+      list.push(sc);
+    }
+    await setDoc(sDocRef, { list });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, `settings/smart_collections (save ${sc.id})`);
+  }
 }
 
-export function subscribeClients(
-  onUpdate: (clients: Client[]) => void,
-  onError: (err: any) => void
-): () => void {
-  const tenantId = resolveCurrentTenantId();
-  const path = resolveCollectionPath('clients');
-  return onSnapshot(
-    query(
-      collection(db, path),
-      where('companyId', '==', tenantId)
-    ),
-    (snap) => {
-      const list: Client[] = [];
-      snap.forEach((docSnap) => {
-        const data = docSnap.data() as Client;
-        list.push({
-          ...data,
-          companyId: data.companyId || tenantId
-        });
-      });
-      onUpdate(list);
-    },
-    wrapOnError(onError, OperationType.GET, path)
-  );
+export async function deleteSmartCollectionInCloud(scId: string) {
+  try {
+    const sDocRef = doc(db, 'settings', 'smart_collections');
+    const sSnap = await getDoc(sDocRef);
+    if (sSnap.exists()) {
+      const list = sSnap.data().list || [];
+      const updatedList = list.filter((item: any) => item.id !== scId);
+      await setDoc(sDocRef, { list: updatedList });
+    }
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, `settings/smart_collections (delete ${scId})`);
+  }
 }
 
-export function subscribeTransactions(
-  onUpdate: (transactions: Transaction[]) => void,
-  onError: (err: any) => void
-): () => void {
-  const tenantId = resolveCurrentTenantId();
-  const path = resolveCollectionPath('transactions');
-  return onSnapshot(
-    query(
-      collection(db, path),
-      where('companyId', '==', tenantId)
-    ),
-    (snap) => {
-      const list: Transaction[] = [];
-      snap.forEach((docSnap) => {
-        const data = docSnap.data() as Transaction;
-        list.push({
-          ...data,
-          companyId: data.companyId || tenantId
-        });
-      });
-      list.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-      onUpdate(list);
-    },
-    wrapOnError(onError, OperationType.GET, path)
-  );
+// Smart Financeiro PIX Helpers
+export async function savePaymentProvidersInCloud(providers: any[]) {
+  try {
+    await setDoc(doc(db, 'settings', 'payment_providers'), { list: providers });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, 'settings/payment_providers');
+  }
 }
 
-export function subscribeBackups(
-  onUpdate: (backups: BackupHistory[]) => void,
-  onError: (err: any) => void
-): () => void {
-  const tenantId = resolveCurrentTenantId();
-  const path = resolveCollectionPath('backups');
-  return onSnapshot(
-    query(
-      collection(db, path),
-      where('companyId', '==', tenantId)
-    ),
-    (snap) => {
-      const list: BackupHistory[] = [];
-      snap.forEach((docSnap) => {
-        const data = docSnap.data() as BackupHistory;
-        list.push({
-          ...data,
-          companyId: data.companyId || tenantId
-        });
-      });
-      list.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-      onUpdate(list);
-    },
-    wrapOnError(onError, OperationType.GET, path)
-  );
+export async function savePixChargesInCloud(charges: any[]) {
+  try {
+    await setDoc(doc(db, 'settings', 'pix_charges'), { list: charges });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, 'settings/pix_charges');
+  }
 }
 
-export function subscribeTickets(
-  onUpdate: (tickets: SupportTicket[]) => void,
-  onError: (err: any) => void
-): () => void {
-  const tenantId = resolveCurrentTenantId();
-  const path = resolveCollectionPath('tickets');
-  return onSnapshot(
-    query(
-      collection(db, path),
-      where('companyId', '==', tenantId)
-    ),
-    (snap) => {
-      const list: SupportTicket[] = [];
-      snap.forEach((docSnap) => {
-        const data = docSnap.data() as SupportTicket;
-        list.push({
-          ...data,
-          companyId: data.companyId || tenantId
-        });
-      });
-      list.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-      onUpdate(list);
-    },
-    wrapOnError(onError, OperationType.GET, path)
-  );
+export async function savePaymentLogsInCloud(logs: any[]) {
+  try {
+    await setDoc(doc(db, 'settings', 'payment_logs'), { list: logs });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, 'settings/payment_logs');
+  }
 }
 
-export function subscribeNotifications(
-  onUpdate: (notifications: NotificationLog[]) => void,
-  onError: (err: any) => void
-): () => void {
-  const tenantId = resolveCurrentTenantId();
-  const path = resolveCollectionPath('notifications');
-  return onSnapshot(
-    query(
-      collection(db, path),
-      where('companyId', '==', tenantId)
-    ),
-    (snap) => {
-      const list: NotificationLog[] = [];
-      snap.forEach((docSnap) => {
-        const data = docSnap.data() as NotificationLog;
-        list.push({
-          ...data,
-          companyId: data.companyId || tenantId
-        });
-      });
-      list.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-      onUpdate(list);
-    },
-    wrapOnError(onError, OperationType.GET, path)
-  );
+export async function savePaymentWebhooksInCloud(webhooks: any[]) {
+  try {
+    await setDoc(doc(db, 'settings', 'payment_webhooks'), { list: webhooks });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, 'settings/payment_webhooks');
+  }
 }
 
-export function subscribePixKey(
-  onUpdate: (pixKey: string) => void,
-  onError: (err: any) => void
-): () => void {
-  const tenantId = resolveCurrentTenantId();
-  const path = resolveCollectionPath('settings');
-  return onSnapshot(
-    doc(db, path, `pix_${tenantId}`),
-    (snap) => {
-      if (snap.exists()) {
-        const data = snap.data();
-        onUpdate(data.key);
-      } else {
-        onUpdate('');
-      }
-    },
-    wrapOnError(onError, OperationType.GET, path)
-  );
+export async function saveBankReconciliationInCloud(reconciliations: any[]) {
+  try {
+    await setDoc(doc(db, 'settings', 'bank_reconciliation'), { list: reconciliations });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, 'settings/bank_reconciliation');
+  }
 }
 
-export function subscribeStockControl(
-  onUpdate: (enabled: boolean) => void,
-  onError: (err: any) => void
-): () => void {
-  const tenantId = resolveCurrentTenantId();
-  const path = resolveCollectionPath('settings');
-  return onSnapshot(
-    doc(db, path, `stock_${tenantId}`),
-    (snap) => {
-      if (snap.exists()) {
-        const data = snap.data();
-        onUpdate(data.enabled !== false);
-      } else {
-        onUpdate(true); // Default to true
-      }
-    },
-    wrapOnError(onError, OperationType.GET, path)
-  );
+export async function saveFinancialSettingsInCloud(settings: any) {
+  try {
+    await setDoc(doc(db, 'settings', 'financial_settings'), settings);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, 'settings/financial_settings');
+  }
 }
 
-export async function saveStockControlInCloud(enabled: boolean) {
-  const tenantId = resolveCurrentTenantId();
-  const path = resolveCollectionPath('settings');
-  await safeSetDoc(doc(db, path, `stock_${tenantId}`), { enabled, companyId: tenantId }, path);
+export async function saveAdminSecurityInCloud(settings: AdminSecuritySettings) {
+  try {
+    await setDoc(doc(db, 'settings', 'admin_security'), settings);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, 'settings/admin_security');
+  }
+}
+
+export async function saveAdminSecurityLogsInCloud(logs: AdminSecurityLog[]) {
+  try {
+    await setDoc(doc(db, 'settings', 'admin_security_logs'), { list: logs });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, 'settings/admin_security_logs');
+  }
+}
+
+export async function saveProviderChangeLogsInCloud(logs: ProviderChangeLog[]) {
+  try {
+    await setDoc(doc(db, 'settings', 'provider_change_logs'), { list: logs });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, 'settings/provider_change_logs');
+  }
+}
+
+export async function savePaymentMessageLogInCloud(log: PaymentMessageLog) {
+  try {
+    const sDocRef = doc(db, 'settings', 'payment_message_logs');
+    const sSnap = await getDoc(sDocRef);
+    let list: any[] = [];
+    if (sSnap.exists()) {
+      list = sSnap.data().list || [];
+    }
+    const index = list.findIndex((item: any) => item.id === log.id);
+    if (index >= 0) {
+      list[index] = log;
+    } else {
+      list.push(log);
+    }
+    await setDoc(sDocRef, { list });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, `settings/payment_message_logs (save ${log.id})`);
+  }
 }
 
 

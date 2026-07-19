@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { TENANT_CONFIG } from '../config/tenant';
+
 export interface ReceiptItem {
   name: string;
   qty: number;
@@ -61,7 +63,7 @@ export function generateReceiptCanvas(
   // Date and Time
   ctx.font = '10px "Courier New", Courier, monospace';
   ctx.fillText(`EMISSÃO: ${dateStr}`, width / 2, 68);
-  ctx.fillText(`CANTINA SEGURA UDV v1.0`, width / 2, 82);
+  ctx.fillText(TENANT_CONFIG.RECEIPT_FOOTER_VERSION, width / 2, 82);
 
   // Helper for dashed lines
   const drawDashedLine = (y: number) => {

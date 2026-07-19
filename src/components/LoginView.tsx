@@ -7,6 +7,7 @@ import React, { useState } from 'react';
 import { AppUser } from '../types';
 import { Key, User, ShieldCheck } from 'lucide-react';
 import { motion } from 'motion/react';
+import { TENANT_CONFIG } from '../config/tenant';
 
 interface LoginViewProps {
   users: AppUser[];
@@ -73,11 +74,11 @@ export default function LoginView({ users, onLogin }: LoginViewProps) {
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(16,185,129,0.1),transparent)] pointer-events-none" />
           
           <div className="w-16 h-16 mx-auto rounded-3xl bg-gradient-to-br from-amber-400 via-amber-500 to-emerald-500 text-white flex items-center justify-center font-display font-black text-xl tracking-tight shadow-xl shadow-emerald-950/40 border border-emerald-400/25">
-            UDV
+            {TENANT_CONFIG.COGNITIVE_NAME}
           </div>
           
           <h2 className="mt-4 font-display font-black text-lg md:text-xl tracking-tight text-white">
-            UDV Cantina Segura
+            {TENANT_CONFIG.COMPANY_NAME}
           </h2>
           <p className="text-[11px] text-emerald-300 font-mono mt-1 uppercase tracking-widest font-semibold">
             Painel de Autenticação • SmartPOS

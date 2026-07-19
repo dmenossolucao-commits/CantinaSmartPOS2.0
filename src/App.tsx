@@ -3,8 +3,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
-import { Product, Client, Transaction, BackupHistory, SupportTicket, NotificationLog, AppUser } from './types';
+import React, { useState, useEffect, useMemo } from 'react';
+import { 
+  Product, Client, Transaction, BackupHistory, SupportTicket, NotificationLog, AppUser, 
+  SmartCobrancaSettings, SmartCollection, PixCharge, BankReconciliation, PaymentLog, 
+  FinancialSettings, PaymentWebhook, AdminSecuritySettings, AdminSecurityLog, ProviderChangeLog,
+  PaymentMessageLog 
+} from './types';
 import { 
   INITIAL_PRODUCTS, INITIAL_CLIENTS, INITIAL_TRANSACTIONS, INITIAL_BACKUPS, INITIAL_SUPPORT 
 } from './data';
@@ -17,15 +22,18 @@ import SalesHistory from './components/SalesHistory';
 import OutstandingAccounts from './components/OutstandingAccounts';
 import LoginView from './components/LoginView';
 import UserManager from './components/UserManager';
+import SmartCobrancaIA from './components/SmartCobrancaIA';
+import SmartFinanceiroPIX from './components/SmartFinanceiroPIX';
+import { ProviderConfig } from './providers/payments/ProviderRegistry';
 import { 
   ShoppingCart, Users, Package, TrendingUp, Smartphone, 
-  CheckCircle, AlertCircle, CalendarClock, History, LogOut, Shield
+  CheckCircle, AlertCircle, CalendarClock, History, LogOut, Shield, Sparkles, DollarSign
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 // Import Firebase config & Firestore handlers
-import { signInAnonymously } from 'firebase/auth';
-import { auth } from './lib/firebase';
+import { db } from './lib/firebase';
+import { collection, doc, onSnapshot } from 'firebase/firestore';
 import { 
   checkAndPopulateInitialData,
   saveProductInCloud,
@@ -46,21 +54,28 @@ import {
   mobileAddCreditInCloud,
   saveUserInCloud,
   deleteUserInCloud,
-  subscribeUsers,
-  subscribeProducts,
-  subscribeClients,
-  subscribeTransactions,
-  subscribeBackups,
-  subscribeTickets,
-  subscribeNotifications,
-  subscribePixKey,
-  subscribeStockControl,
-  saveStockControlInCloud,
-  markNotificationAsReadInCloud,
-  markAllNotificationsAsReadInCloud
+  saveSmartCobrancaSettingsInCloud,
+  saveSmartCollectionInCloud,
+  deleteSmartCollectionInCloud,
+  savePaymentProvidersInCloud,
+  savePixChargesInCloud,
+  savePaymentLogsInCloud,
+  savePaymentWebhooksInCloud,
+  saveBankReconciliationInCloud,
+  saveFinancialSettingsInCloud,
+  saveAdminSecurityInCloud,
+  saveAdminSecurityLogsInCloud,
+  saveProviderChangeLogsInCloud,
+  savePaymentMessageLogInCloud
 } from './lib/firebaseService';
 
-type ActiveTab = 'pdv' | 'clientes' | 'prazo' | 'historico' | 'cardapio' | 'admin' | 'mobile' | 'usuarios';
+import { TENANT_CONFIG } from './config/tenant';
+
+// Controlled Feature Flags for Smart Modules
+const ENABLE_SMART_FINANCEIRO = false;
+const ENABLE_SMART_COBRANCA = false;
+
+type ActiveTab = 'pdv' | 'clientes' | 'prazo' | 'historico' | 'cardapio' | 'admin' | 'mobile' | 'usuarios' | 'smartcobranca' | 'financeiro';
 
 interface PushAlert {
   id: string;
@@ -86,28 +101,81 @@ export default function App() {
   
   // Cloud Sync States
   const [products, setProducts] = useState<Product[]>([]);
-  const [clients, setClients] = useState<Client[]>([]);
+  const [rawClients, setRawClients] = useState<Client[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+
+  const clients = useMemo(() => {
+    return rawClients.map(c => {
+      const pendingTx = transactions.filter(t => 
+        t.clientId === c.id && 
+        t.paymentMethod === 'prazo' && 
+        t.status === 'pendente'
+      );
+      const pendingSum = pendingTx.reduce((sum, t) => sum + (t.saldo_restante !== undefined ? t.saldo_restante : t.total), 0);
+      const correctBalance = c.balance > 0 ? c.balance : -pendingSum;
+      return {
+        ...c,
+        balance: correctBalance
+      };
+    });
+  }, [rawClients, transactions]);
   const [backups, setBackups] = useState<BackupHistory[]>([]);
   const [tickets, setTickets] = useState<SupportTicket[]>([]);
   const [notifications, setNotifications] = useState<NotificationLog[]>([]);
   const [pixKey, setPixKey] = useState<string>('pix@udvcantina.com');
-  const [useStockControl, setUseStockControl] = useState<boolean>(true);
+  
+  // Smart Cobrança States
+  const [smartCollections, setSmartCollections] = useState<SmartCollection[]>([]);
+  const [smartCobrancaSettings, setSmartCobrancaSettings] = useState<SmartCobrancaSettings>({
+    ativarModulo: true,
+    modoEnvio: 'manual',
+    providerId: 'whatsapp_manual',
+    maximoCobrancas: 3,
+    intervaloPadrao: 'semanal',
+    modeloPadrao: 'Olá {cliente}! 😊 Passando para lembrar do seu saldo em aberto de {saldo} na cantina. Se precisar negociar, estamos à disposição. Abraços!',
+    horarioInicio: '08:00',
+    horarioFim: '18:00',
+    naoSabado: true,
+    naoDomingo: true,
+    naoFeriados: true,
+    pararAoPagar: true,
+    pararAposMaximo: true,
+    tomCobranca: 'educado',
+    mostrarBotaoWhatsapp: true,
+    mostrarBotaoCopiar: true,
+    permitirApenasVencidos: false
+  });
 
   // Active floating push notifications list
   const [pushAlerts, setPushAlerts] = useState<PushAlert[]>([]);
+
+  // Smart Financeiro PIX States
+  const [paymentProviders, setPaymentProviders] = useState<ProviderConfig[]>([]);
+  const [pixCharges, setPixCharges] = useState<PixCharge[]>([]);
+  const [paymentLogs, setPaymentLogs] = useState<PaymentLog[]>([]);
+  const [paymentWebhooks, setPaymentWebhooks] = useState<PaymentWebhook[]>([]);
+  const [reconciliations, setReconciliations] = useState<BankReconciliation[]>([]);
+  const [financialSettings, setFinancialSettings] = useState<FinancialSettings>({
+    instituicaoPadrao: 'stone',
+    instituicaoAtiva: 'stone',
+    timeout: 30,
+    tentativas: 3,
+    ativarLogs: true,
+    ativarAuditoria: true,
+    criadoEm: new Date().toISOString(),
+    atualizadoEm: new Date().toISOString()
+  });
+
+  // Admin Security States
+  const [adminSecurity, setAdminSecurity] = useState<AdminSecuritySettings | null>(null);
+  const [adminSecurityLogs, setAdminSecurityLogs] = useState<AdminSecurityLog[]>([]);
+  const [providerChangeLogs, setProviderChangeLogs] = useState<ProviderChangeLog[]>([]);
+  const [paymentMessageLogs, setPaymentMessageLogs] = useState<PaymentMessageLog[]>([]);
 
   // Setup Firestore synchronization
   useEffect(() => {
     async function setupCloudSync() {
       try {
-        // Attempt anonymous sign-in to satisfy standard Firestore rules demanding authentication
-        try {
-          await signInAnonymously(auth);
-        } catch (authErr) {
-          console.warn('Could not authenticate anonymously with Firebase Auth, proceeding anyway:', authErr);
-        }
-
         // Prepare migration data from localStorage if available, fallback to default seed data
         const localProducts = (() => {
           const local = localStorage.getItem('udv_canteen_products');
@@ -163,7 +231,7 @@ export default function App() {
 
         // Track listener hydration to turn off loading screen
         let loadedCount = 0;
-        const totalCollections = 8;
+        const totalCollections = 8 + (ENABLE_SMART_COBRANCA ? 2 : 0) + (ENABLE_SMART_FINANCEIRO ? 10 : 0);
         const checkLoadingHydration = () => {
           loadedCount++;
           if (loadedCount >= totalCollections) {
@@ -172,7 +240,9 @@ export default function App() {
         };
 
         // 2. Realtime subscription to cloud collections
-        const unsubUsers = subscribeUsers((list) => {
+        const unsubUsers = onSnapshot(collection(db, 'users'), (snap) => {
+          const list: AppUser[] = [];
+          snap.forEach(doc => list.push(doc.data() as AppUser));
           setUsers(list);
           if (loadedCount < totalCollections) checkLoadingHydration();
         }, (err) => {
@@ -180,7 +250,9 @@ export default function App() {
           if (loadedCount < totalCollections) checkLoadingHydration();
         });
 
-        const unsubProducts = subscribeProducts((list) => {
+        const unsubProducts = onSnapshot(collection(db, 'products'), (snap) => {
+          const list: Product[] = [];
+          snap.forEach(doc => list.push(doc.data() as Product));
           setProducts(list);
           if (loadedCount < totalCollections) checkLoadingHydration();
         }, (err) => {
@@ -188,15 +260,20 @@ export default function App() {
           if (loadedCount < totalCollections) checkLoadingHydration();
         });
 
-        const unsubClients = subscribeClients((list) => {
-          setClients(list);
+        const unsubClients = onSnapshot(collection(db, 'clients'), (snap) => {
+          const list: Client[] = [];
+          snap.forEach(doc => list.push(doc.data() as Client));
+          setRawClients(list);
           if (loadedCount < totalCollections) checkLoadingHydration();
         }, (err) => {
           console.error('Error syncing clients:', err);
           if (loadedCount < totalCollections) checkLoadingHydration();
         });
 
-        const unsubTransactions = subscribeTransactions((list) => {
+        const unsubTransactions = onSnapshot(collection(db, 'transactions'), (snap) => {
+          const list: Transaction[] = [];
+          snap.forEach(doc => list.push(doc.data() as Transaction));
+          list.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
           setTransactions(list);
           if (loadedCount < totalCollections) checkLoadingHydration();
         }, (err) => {
@@ -204,7 +281,10 @@ export default function App() {
           if (loadedCount < totalCollections) checkLoadingHydration();
         });
 
-        const unsubBackups = subscribeBackups((list) => {
+        const unsubBackups = onSnapshot(collection(db, 'backups'), (snap) => {
+          const list: BackupHistory[] = [];
+          snap.forEach(doc => list.push(doc.data() as BackupHistory));
+          list.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
           setBackups(list);
           if (loadedCount < totalCollections) checkLoadingHydration();
         }, (err) => {
@@ -212,7 +292,10 @@ export default function App() {
           if (loadedCount < totalCollections) checkLoadingHydration();
         });
 
-        const unsubTickets = subscribeTickets((list) => {
+        const unsubTickets = onSnapshot(collection(db, 'tickets'), (snap) => {
+          const list: SupportTicket[] = [];
+          snap.forEach(doc => list.push(doc.data() as SupportTicket));
+          list.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
           setTickets(list);
           if (loadedCount < totalCollections) checkLoadingHydration();
         }, (err) => {
@@ -220,7 +303,10 @@ export default function App() {
           if (loadedCount < totalCollections) checkLoadingHydration();
         });
 
-        const unsubNotifications = subscribeNotifications((list) => {
+        const unsubNotifications = onSnapshot(collection(db, 'notifications'), (snap) => {
+          const list: NotificationLog[] = [];
+          snap.forEach(doc => list.push(doc.data() as NotificationLog));
+          list.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
           setNotifications(list);
           if (loadedCount < totalCollections) checkLoadingHydration();
         }, (err) => {
@@ -228,19 +314,192 @@ export default function App() {
           if (loadedCount < totalCollections) checkLoadingHydration();
         });
 
-        const unsubPix = subscribePixKey((key) => {
-          setPixKey(key);
+        const unsubPix = onSnapshot(doc(db, 'settings', 'pix'), (snap) => {
+          if (snap.exists()) {
+            setPixKey(snap.data().key);
+          }
           if (loadedCount < totalCollections) checkLoadingHydration();
         }, (err) => {
           console.error('Error syncing settings:', err);
           if (loadedCount < totalCollections) checkLoadingHydration();
         });
 
-        const unsubStock = subscribeStockControl((enabled) => {
-          setUseStockControl(enabled);
-        }, (err) => {
-          console.error('Error syncing stock control settings:', err);
-        });
+        let unsubSmartCollections = () => {};
+        if (ENABLE_SMART_COBRANCA) {
+          unsubSmartCollections = onSnapshot(doc(db, 'settings', 'smart_collections'), (snap) => {
+            if (snap.exists()) {
+              setSmartCollections(snap.data().list || []);
+            } else {
+              setSmartCollections([]);
+            }
+            if (loadedCount < totalCollections) checkLoadingHydration();
+          }, (err) => {
+            console.error('Error syncing smart_collections:', err);
+            if (loadedCount < totalCollections) checkLoadingHydration();
+          });
+        }
+
+        let unsubSmartSettings = () => {};
+        if (ENABLE_SMART_COBRANCA) {
+          unsubSmartSettings = onSnapshot(doc(db, 'settings', 'smart_cobranca'), (snap) => {
+            if (snap.exists()) {
+              setSmartCobrancaSettings(snap.data() as SmartCobrancaSettings);
+            }
+            if (loadedCount < totalCollections) checkLoadingHydration();
+          }, (err) => {
+            console.error('Error syncing smart settings:', err);
+            if (loadedCount < totalCollections) checkLoadingHydration();
+          });
+        }
+
+        let unsubPaymentProviders = () => {};
+        if (ENABLE_SMART_FINANCEIRO) {
+          unsubPaymentProviders = onSnapshot(doc(db, 'settings', 'payment_providers'), (snap) => {
+            if (snap.exists()) {
+              setPaymentProviders(snap.data().list || []);
+            } else {
+              setPaymentProviders([]);
+            }
+            if (loadedCount < totalCollections) checkLoadingHydration();
+          }, (err) => {
+            console.error('Error syncing payment_providers:', err);
+            if (loadedCount < totalCollections) checkLoadingHydration();
+          });
+        }
+
+        let unsubPixCharges = () => {};
+        if (ENABLE_SMART_FINANCEIRO) {
+          unsubPixCharges = onSnapshot(doc(db, 'settings', 'pix_charges'), (snap) => {
+            if (snap.exists()) {
+              setPixCharges(snap.data().list || []);
+            } else {
+              setPixCharges([]);
+            }
+            if (loadedCount < totalCollections) checkLoadingHydration();
+          }, (err) => {
+            console.error('Error syncing pix_charges:', err);
+            if (loadedCount < totalCollections) checkLoadingHydration();
+          });
+        }
+
+        let unsubPaymentLogs = () => {};
+        if (ENABLE_SMART_FINANCEIRO) {
+          unsubPaymentLogs = onSnapshot(doc(db, 'settings', 'payment_logs'), (snap) => {
+            if (snap.exists()) {
+              setPaymentLogs(snap.data().list || []);
+            } else {
+              setPaymentLogs([]);
+            }
+            if (loadedCount < totalCollections) checkLoadingHydration();
+          }, (err) => {
+            console.error('Error syncing payment_logs:', err);
+            if (loadedCount < totalCollections) checkLoadingHydration();
+          });
+        }
+
+        let unsubPaymentWebhooks = () => {};
+        if (ENABLE_SMART_FINANCEIRO) {
+          unsubPaymentWebhooks = onSnapshot(doc(db, 'settings', 'payment_webhooks'), (snap) => {
+            if (snap.exists()) {
+              setPaymentWebhooks(snap.data().list || []);
+            } else {
+              setPaymentWebhooks([]);
+            }
+            if (loadedCount < totalCollections) checkLoadingHydration();
+          }, (err) => {
+            console.error('Error syncing payment_webhooks:', err);
+            if (loadedCount < totalCollections) checkLoadingHydration();
+          });
+        }
+
+        let unsubReconciliations = () => {};
+        if (ENABLE_SMART_FINANCEIRO) {
+          unsubReconciliations = onSnapshot(doc(db, 'settings', 'bank_reconciliation'), (snap) => {
+            if (snap.exists()) {
+              setReconciliations(snap.data().list || []);
+            } else {
+              setReconciliations([]);
+            }
+            if (loadedCount < totalCollections) checkLoadingHydration();
+          }, (err) => {
+            console.error('Error syncing bank_reconciliation:', err);
+            if (loadedCount < totalCollections) checkLoadingHydration();
+          });
+        }
+
+        let unsubFinancialSettings = () => {};
+        if (ENABLE_SMART_FINANCEIRO) {
+          unsubFinancialSettings = onSnapshot(doc(db, 'settings', 'financial_settings'), (snap) => {
+            if (snap.exists()) {
+              setFinancialSettings(snap.data() as FinancialSettings);
+            }
+            if (loadedCount < totalCollections) checkLoadingHydration();
+          }, (err) => {
+            console.error('Error syncing financial_settings:', err);
+            if (loadedCount < totalCollections) checkLoadingHydration();
+          });
+        }
+
+        let unsubAdminSecurity = () => {};
+        if (ENABLE_SMART_FINANCEIRO) {
+          unsubAdminSecurity = onSnapshot(doc(db, 'settings', 'admin_security'), (snap) => {
+            if (snap.exists()) {
+              setAdminSecurity(snap.data() as AdminSecuritySettings);
+            } else {
+              setAdminSecurity(null);
+            }
+            if (loadedCount < totalCollections) checkLoadingHydration();
+          }, (err) => {
+            console.error('Error syncing admin_security:', err);
+            if (loadedCount < totalCollections) checkLoadingHydration();
+          });
+        }
+
+        let unsubAdminSecurityLogs = () => {};
+        if (ENABLE_SMART_FINANCEIRO) {
+          unsubAdminSecurityLogs = onSnapshot(doc(db, 'settings', 'admin_security_logs'), (snap) => {
+            if (snap.exists()) {
+              setAdminSecurityLogs(snap.data().list || []);
+            } else {
+              setAdminSecurityLogs([]);
+            }
+            if (loadedCount < totalCollections) checkLoadingHydration();
+          }, (err) => {
+            console.error('Error syncing admin_security_logs:', err);
+            if (loadedCount < totalCollections) checkLoadingHydration();
+          });
+        }
+
+        let unsubProviderChangeLogs = () => {};
+        if (ENABLE_SMART_FINANCEIRO) {
+          unsubProviderChangeLogs = onSnapshot(doc(db, 'settings', 'provider_change_logs'), (snap) => {
+            if (snap.exists()) {
+              setProviderChangeLogs(snap.data().list || []);
+            } else {
+              setProviderChangeLogs([]);
+            }
+            if (loadedCount < totalCollections) checkLoadingHydration();
+          }, (err) => {
+            console.error('Error syncing provider_change_logs:', err);
+            if (loadedCount < totalCollections) checkLoadingHydration();
+          });
+        }
+
+        let unsubPaymentMessageLogs = () => {};
+        if (ENABLE_SMART_FINANCEIRO) {
+          unsubPaymentMessageLogs = onSnapshot(doc(db, 'settings', 'payment_message_logs'), (snap) => {
+            let list: PaymentMessageLog[] = [];
+            if (snap.exists()) {
+              list = snap.data().list || [];
+            }
+            list.sort((a, b) => new Date(`${b.data}T${b.hora}`).getTime() - new Date(`${a.data}T${a.hora}`).getTime());
+            setPaymentMessageLogs(list);
+            if (loadedCount < totalCollections) checkLoadingHydration();
+          }, (err) => {
+            console.error('Error syncing payment_message_logs:', err);
+            if (loadedCount < totalCollections) checkLoadingHydration();
+          });
+        }
 
         return () => {
           unsubUsers();
@@ -251,7 +510,18 @@ export default function App() {
           unsubTickets();
           unsubNotifications();
           unsubPix();
-          unsubStock();
+          unsubSmartCollections();
+          unsubSmartSettings();
+          unsubPaymentProviders();
+          unsubPixCharges();
+          unsubPaymentLogs();
+          unsubPaymentWebhooks();
+          unsubReconciliations();
+          unsubFinancialSettings();
+          unsubAdminSecurity();
+          unsubAdminSecurityLogs();
+          unsubProviderChangeLogs();
+          unsubPaymentMessageLogs();
         };
       } catch (err) {
         console.error('Cloud Sync initialization error:', err);
@@ -260,7 +530,17 @@ export default function App() {
     }
 
     setupCloudSync();
-  }, [currentUser?.companyId]);
+  }, []);
+
+  // Safety tab redirect if modules are disabled
+  useEffect(() => {
+    if (activeTab === 'smartcobranca' && !ENABLE_SMART_COBRANCA) {
+      setActiveTab('pdv');
+    }
+    if (activeTab === 'financeiro' && !ENABLE_SMART_FINANCEIRO) {
+      setActiveTab('pdv');
+    }
+  }, [activeTab]);
 
   // Push Alert Generator
   const triggerPushNotification = (title: string, body: string, type: 'info' | 'success' | 'warn' = 'success') => {
@@ -305,32 +585,20 @@ export default function App() {
   }, []);
 
   // Complete PDV transaction callback
-  const handleCompleteSale = async (tx: Transaction, updatedClients: Client[], updatedProducts: Product[]) => {
-    // Optimistic UI updates to synchronize instantly:
-    setProducts(updatedProducts);
-    setClients(updatedClients);
-    setTransactions(prev => {
-      const nextList = [tx, ...prev];
-      localStorage.setItem('udv_canteen_transactions', JSON.stringify(nextList));
-      return nextList;
-    });
-    localStorage.setItem('udv_canteen_products', JSON.stringify(updatedProducts));
-    localStorage.setItem('udv_canteen_clients', JSON.stringify(updatedClients));
-    
+  const handleCompleteSale = async (tx: Transaction, updatedClients: Client[], updatedProducts: Product[], updatedTransactions?: Transaction[]) => {
     try {
-      await completeSaleInCloud(tx, updatedClients, updatedProducts);
-    } catch (err) {
+      await completeSaleInCloud(tx, updatedClients, updatedProducts, updatedTransactions);
+    } catch (err: any) {
+      console.error('--- EXPLICIT COMPLETE SALE FAILURE ---');
+      console.error('Error Code:', err?.code || err?.message ? 'FirestoreError' : 'UNKNOWN');
+      console.error('Error Message:', err?.message || String(err));
+      console.error('Error Stack:', err?.stack || 'NO_STACK');
       console.error(err);
-      triggerPushNotification('Venda Salva', 'Salvo no navegador (Erro de sincronização na nuvem).', 'warn');
+      triggerPushNotification('Erro ao Salvar', `Não foi possível salvar a venda na nuvem: ${err?.message || String(err)}`, 'warn');
     }
   };
 
   const handleAddTransaction = async (tx: Transaction) => {
-    setTransactions(prev => {
-      const nextList = [tx, ...prev];
-      localStorage.setItem('udv_canteen_transactions', JSON.stringify(nextList));
-      return nextList;
-    });
     try {
       await saveTransactionInCloud(tx);
     } catch (err) {
@@ -338,136 +606,92 @@ export default function App() {
     }
   };
 
-  const handleToggleStockControl = async () => {
-    const nextVal = !useStockControl;
-    setUseStockControl(nextVal);
-    try {
-      await saveStockControlInCloud(nextVal);
-      triggerPushNotification('Estoque', `Controle de estoque foi ${nextVal ? 'ativado' : 'desativado'}.`, 'success');
-    } catch (err) {
-      console.error(err);
-      triggerPushNotification('Aviso de Sincronização', 'Configuração de estoque salva no navegador.', 'warn');
-    }
-  };
-
   const handleZeroStock = async () => {
-    const previousProducts = [...products];
-    setProducts(prev => prev.map(p => ({ ...p, stock: 0 })));
     try {
       await zeroStockInCloud(products);
       triggerPushNotification('Estoque Zerado', 'O estoque de todos os produtos foi zerado via comando administrativo.', 'warn');
     } catch (err) {
       console.error(err);
-      setProducts(previousProducts);
     }
   };
 
   const handleZeroClients = async () => {
-    const previousClients = [...clients];
-    setClients(prev => prev.map(c => ({ ...c, balance: 0 })));
     try {
       await zeroClientsInCloud(clients);
       triggerPushNotification('Clientes Zerados', 'O saldo de todos os clientes foi zerado para R$ 0,00 via comando administrativo.', 'warn');
     } catch (err) {
       console.error(err);
-      setClients(previousClients);
     }
   };
 
   // Add / Edit / Delete Client
   const handleAddClient = async (c: Client) => {
-    setClients(prev => {
-      const nextList = [...prev, c];
-      localStorage.setItem('udv_canteen_clients', JSON.stringify(nextList));
-      return nextList;
-    });
     try {
       await saveClientInCloud(c);
       triggerPushNotification('Novo Cliente Cadastrado', `${c.name} foi adicionado ao banco com limite de R$ ${c.creditLimit.toFixed(2)}.`);
     } catch (err) {
       console.error(err);
-      triggerPushNotification('Salvo Localmente', `${c.name} salvo no navegador (Sincronização pendente).`, 'warn');
     }
   };
 
   const handleUpdateClient = async (c: Client) => {
-    setClients(prev => {
-      const nextList = prev.map(cl => cl.id === c.id ? c : cl);
-      localStorage.setItem('udv_canteen_clients', JSON.stringify(nextList));
-      return nextList;
-    });
     try {
       await saveClientInCloud(c);
     } catch (err) {
       console.error(err);
-      triggerPushNotification('Salvo Localmente', `Alterações de ${c.name} salvas no navegador (Sincronização pendente).`, 'warn');
+    }
+  };
+
+  const handleUpdateClientBalance = async (clientId: string, amount: number) => {
+    try {
+      const client = clients.find(c => c.id === clientId);
+      if (client) {
+        const updatedClient = {
+          ...client,
+          balance: amount,
+          updatedAt: new Date().toISOString()
+        };
+        await saveClientInCloud(updatedClient);
+      }
+    } catch (err) {
+      console.error('Error updating client balance:', err);
     }
   };
 
   const handleDeleteClient = async (clientId: string) => {
-    setClients(prev => {
-      const nextList = prev.filter(cl => cl.id !== clientId);
-      localStorage.setItem('udv_canteen_clients', JSON.stringify(nextList));
-      return nextList;
-    });
     try {
       await deleteClientInCloud(clientId);
       triggerPushNotification('Cadastro Excluído', 'O cliente foi removido com sucesso.', 'warn');
     } catch (err) {
       console.error(err);
-      triggerPushNotification('Excluído Localmente', 'O cliente foi removido no navegador (Sincronização pendente).', 'warn');
     }
   };
 
   // Add / Edit / Delete Product
   const handleAddProduct = async (p: Product) => {
-    // Prevent negative minStock
-    p.minStock = Math.max(0, p.minStock || 0);
-    setProducts(prev => {
-      const nextList = [...prev, p];
-      localStorage.setItem('udv_canteen_products', JSON.stringify(nextList));
-      return nextList;
-    });
     try {
       await saveProductInCloud(p);
-      triggerPushNotification('Cardápio Atualizado', `Novo produto "${p.name}" foi disponibilizado no PDV.`, 'success');
+      triggerPushNotification('Cardápio Atualizado', `Novo produto "${p.name}" foi disponibilizado no PDV.`);
     } catch (err) {
-      console.error('Error saving new product to cloud:', err);
-      triggerPushNotification('Salvo Localmente', `Produto "${p.name}" salvo no navegador (Sincronização pendente).`, 'warn');
+      console.error(err);
     }
   };
 
   const handleUpdateProduct = async (p: Product) => {
-    // Prevent negative minStock
-    p.minStock = Math.max(0, p.minStock || 0);
-    setProducts(prev => {
-      const nextList = prev.map(prod => prod.id === p.id ? p : prod);
-      localStorage.setItem('udv_canteen_products', JSON.stringify(nextList));
-      return nextList;
-    });
     try {
       await saveProductInCloud(p);
-      triggerPushNotification('Cardápio Atualizado', `O produto "${p.name}" foi salvo com sucesso.`, 'success');
+      triggerPushNotification('Produto Atualizado', `As alterações de "${p.name}" foram gravadas com sucesso.`);
     } catch (err) {
-      console.error('Error updating product in cloud:', err);
-      triggerPushNotification('Salvo Localmente', `Produto "${p.name}" salvo no navegador (Sincronização pendente).`, 'warn');
+      console.error(err);
+      triggerPushNotification('Erro ao Salvar', `Falha ao gravar "${p.name}" no servidor.`, 'warn');
     }
   };
 
   const handleDeleteProduct = async (productId: string) => {
-    const productToDelete = products.find(prod => prod.id === productId);
-    const productName = productToDelete ? productToDelete.name : 'Produto';
-    setProducts(prev => {
-      const nextList = prev.filter(prod => prod.id !== productId);
-      localStorage.setItem('udv_canteen_products', JSON.stringify(nextList));
-      return nextList;
-    });
     try {
       await deleteProductInCloud(productId);
-      triggerPushNotification('Cardápio Atualizado', `O produto "${productName}" foi excluído.`, 'success');
     } catch (err) {
-      console.error('Error deleting product in cloud:', err);
-      triggerPushNotification('Excluído Localmente', `O produto "${productName}" foi excluído no navegador (Sincronização pendente).`, 'warn');
+      console.error(err);
     }
   };
 
@@ -540,16 +764,11 @@ export default function App() {
   };
 
   const handleClearTransactions = async () => {
-    const previousTransactions = [...transactions];
     try {
-      // Optimistically clear the local transactions state to trigger a full UI re-render instantly
-      setTransactions([]);
       await clearAllTransactionsInCloud(transactions);
       triggerPushNotification('Dados Resetados', 'O histórico de vendas do PDV foi limpo com sucesso.', 'warn');
     } catch (err) {
       console.error(err);
-      setTransactions(previousTransactions);
-      triggerPushNotification('Erro ao Limpar', 'Não foi possível limpar o histórico na nuvem.', 'warn');
     }
   };
 
@@ -561,16 +780,11 @@ export default function App() {
       return;
     }
 
-    const previousTransactions = [...transactions];
     try {
-      // Optimistically update the transaction status locally to cancelado to trigger immediate re-render
-      setTransactions(prev => prev.map(t => t.id === txId ? { ...t, status: 'cancelado' } : t));
       await cancelSaleInCloud(tx, products, clients);
       triggerPushNotification('Venda Cancelada', `Venda ${txId} de R$ ${tx.total.toFixed(2)} foi cancelada com sucesso. Estoque restabelecido!`, 'warn');
     } catch (err) {
       console.error(err);
-      setTransactions(previousTransactions);
-      triggerPushNotification('Erro ao Cancelar', 'Não foi possível cancelar a venda no banco de dados.', 'warn');
     }
   };
 
@@ -578,16 +792,11 @@ export default function App() {
     const tx = transactions.find(t => t.id === txId);
     if (!tx) return;
 
-    const previousTransactions = [...transactions];
     try {
-      // Optimistically filter out the deleted transaction from local state to trigger immediate re-render
-      setTransactions(prev => prev.filter(t => t.id !== txId));
       await deleteSaleInCloud(tx, products, clients);
       triggerPushNotification('Venda Excluída', `A venda ${txId} de R$ ${tx.total.toFixed(2)} foi excluída definitivamente do histórico.`, 'warn');
     } catch (err) {
       console.error(err);
-      setTransactions(previousTransactions);
-      triggerPushNotification('Erro ao Excluir', 'Não foi possível excluir a venda no banco de dados.', 'warn');
     }
   };
 
@@ -600,40 +809,15 @@ export default function App() {
   };
 
   const handleLogin = (u: AppUser) => {
-    const userCompanyId = u.companyId || 'default_udv_company';
-    const userWithCompany = { ...u, companyId: userCompanyId };
-    
-    // Set active tenant in local storage for both general and user specific checks
-    localStorage.setItem('udv_active_tenant_id', userCompanyId);
-    localStorage.setItem('udv_current_user', JSON.stringify(userWithCompany));
-    setCurrentUser(userWithCompany);
-    
+    setCurrentUser(u);
+    localStorage.setItem('udv_current_user', JSON.stringify(u));
     triggerPushNotification('Acesso Permitido', `Seja bem-vindo, ${u.name}!`, 'success');
   };
 
   const handleLogout = () => {
     setCurrentUser(null);
     localStorage.removeItem('udv_current_user');
-    localStorage.removeItem('udv_active_tenant_id');
     triggerPushNotification('Sessão Encerrada', 'Você saiu do sistema com segurança.', 'info');
-  };
-
-  const handleMarkNotificationAsRead = async (id: string) => {
-    setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
-    try {
-      await markNotificationAsReadInCloud(id);
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const handleMarkAllNotificationsAsRead = async () => {
-    setNotifications(prev => prev.map(n => ({ ...n, read: true })));
-    try {
-      await markAllNotificationsAsReadInCloud(notifications);
-    } catch (err) {
-      console.error(err);
-    }
   };
 
 
@@ -644,7 +828,7 @@ export default function App() {
       <div className="min-h-screen bg-[#f5f8f6] flex flex-col items-center justify-center p-6 text-center font-sans">
         <div className="relative flex flex-col items-center space-y-4">
           <div className="w-16 h-16 rounded-3xl bg-gradient-to-br from-amber-400 via-amber-500 to-emerald-600 flex items-center justify-center text-white font-display font-black text-xl tracking-tight shadow-xl animate-bounce">
-            UDV
+            {TENANT_CONFIG.COGNITIVE_NAME}
           </div>
           <div className="w-12 h-12 rounded-full border-4 border-emerald-200 border-t-emerald-600 animate-spin" />
           <div className="space-y-1 animate-pulse">
@@ -671,11 +855,11 @@ export default function App() {
           <div className="flex items-center justify-between w-full lg:w-auto gap-4">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-amber-400 via-amber-500 to-emerald-500 text-white flex items-center justify-center shadow-lg shadow-emerald-950/40 font-display font-black text-xs tracking-tight animate-heart-pulse">
-                UDV
+                {TENANT_CONFIG.COGNITIVE_NAME}
               </div>
               <div>
                 <h1 className="font-display font-bold text-sm md:text-base tracking-tight text-white flex items-center gap-2">
-                  UDV Cantina Segura
+                  {TENANT_CONFIG.COMPANY_NAME}
                   <span className="text-[9px] bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 rounded-full font-mono uppercase font-bold tracking-wider">PRO</span>
                 </h1>
                 <p className="text-[10px] text-emerald-300 font-mono">PDV de Balcão & Gestão de Crédito</p>
@@ -755,6 +939,32 @@ export default function App() {
                 </span>
               )}
             </button>
+            {ENABLE_SMART_COBRANCA && (
+              <button
+                id="nav-tab-smartcobranca"
+                onClick={() => setActiveTab('smartcobranca')}
+                className={`py-2 px-3.5 rounded-xl font-sans text-xs font-bold flex items-center gap-2 transition-all shrink-0 ${
+                  activeTab === 'smartcobranca' 
+                    ? 'bg-gradient-to-r from-amber-500 to-amber-600 text-slate-950 shadow-lg shadow-amber-500/20 scale-102 border-b-2 border-amber-300/30' 
+                    : 'text-emerald-100/70 hover:text-white hover:bg-white/5'
+                }`}
+              >
+                <Sparkles size={14} className={activeTab === 'smartcobranca' ? 'text-slate-950 animate-pulse' : 'text-amber-400'} /> Smart Cobrança IA
+              </button>
+            )}
+            {currentUser?.role === 'admin' && ENABLE_SMART_FINANCEIRO && (
+              <button
+                id="nav-tab-financeiro"
+                onClick={() => setActiveTab('financeiro')}
+                className={`py-2 px-3.5 rounded-xl font-sans text-xs font-bold flex items-center gap-2 transition-all shrink-0 ${
+                  activeTab === 'financeiro' 
+                    ? 'bg-gradient-to-r from-emerald-500 to-teal-600 text-white shadow-lg shadow-emerald-500/20 scale-102 border-b-2 border-emerald-300/30' 
+                    : 'text-emerald-100/70 hover:text-white hover:bg-white/5'
+                }`}
+              >
+                <DollarSign size={14} className={activeTab === 'financeiro' ? 'text-amber-300' : ''} /> Smart Financeiro PIX
+              </button>
+            )}
             <button
               id="nav-tab-historico"
               onClick={() => setActiveTab('historico')}
@@ -837,7 +1047,6 @@ export default function App() {
                 onAddClient={handleAddClient}
                 triggerPushNotification={triggerPushNotification}
                 pixKey={pixKey}
-                useStockControl={useStockControl}
               />
             )}
 
@@ -850,6 +1059,27 @@ export default function App() {
                 triggerPushNotification={triggerPushNotification}
                 pixKey={pixKey}
                 onUpdatePixKey={savePixKeyInCloud}
+              />
+            )}
+
+            {activeTab === 'smartcobranca' && ENABLE_SMART_COBRANCA && (
+              <SmartCobrancaIA
+                clients={clients}
+                transactions={transactions}
+                smartCollections={smartCollections}
+                settings={smartCobrancaSettings}
+                onSaveSettings={async (newSettings) => {
+                  setSmartCobrancaSettings(newSettings);
+                  await saveSmartCobrancaSettingsInCloud(newSettings);
+                }}
+                onSaveCollection={async (newColl) => {
+                  await saveSmartCollectionInCloud(newColl);
+                }}
+                onDeleteCollection={async (collId) => {
+                  await deleteSmartCollectionInCloud(collId);
+                }}
+                triggerPushNotification={triggerPushNotification}
+                pixKey={pixKey}
               />
             )}
 
@@ -884,12 +1114,10 @@ export default function App() {
                 onUpdateProduct={handleUpdateProduct}
                 onDeleteProduct={handleDeleteProduct}
                 onZeroStock={handleZeroStock}
-                useStockControl={useStockControl}
-                onToggleStockControl={handleToggleStockControl}
               />
             )}
 
-            {activeTab === 'admin' && (
+            {activeTab === 'admin' && currentUser?.role === 'admin' && (
               <DashboardView
                 products={products}
                 clients={clients}
@@ -902,8 +1130,6 @@ export default function App() {
                 onDeleteSale={handleDeleteSale}
                 pixKey={pixKey}
                 onUpdatePixKey={savePixKeyInCloud}
-                onMarkNotificationAsRead={handleMarkNotificationAsRead}
-                onMarkAllNotificationsAsRead={handleMarkAllNotificationsAsRead}
               />
             )}
 
@@ -923,6 +1149,40 @@ export default function App() {
                 currentUser={currentUser}
                 onAddUser={handleAddUser}
                 onDeleteUser={handleDeleteUser}
+              />
+            )}
+
+            {activeTab === 'financeiro' && currentUser?.role === 'admin' && ENABLE_SMART_FINANCEIRO && (
+              <SmartFinanceiroPIX
+                clients={clients}
+                transactions={transactions}
+                paymentProviders={paymentProviders}
+                pixCharges={pixCharges}
+                paymentLogs={paymentLogs}
+                paymentWebhooks={paymentWebhooks}
+                reconciliations={reconciliations}
+                settings={financialSettings}
+                onSaveProviders={savePaymentProvidersInCloud}
+                onSaveCharges={savePixChargesInCloud}
+                onSaveLogs={savePaymentLogsInCloud}
+                onSaveWebhooks={savePaymentWebhooksInCloud}
+                onSaveReconciliations={saveBankReconciliationInCloud}
+                onSaveSettings={saveFinancialSettingsInCloud}
+                onSaveTransactions={handleAddTransaction}
+                onUpdateClientBalance={handleUpdateClientBalance}
+                triggerPushNotification={triggerPushNotification}
+                adminSecurity={adminSecurity}
+                adminSecurityLogs={adminSecurityLogs}
+                providerChangeLogs={providerChangeLogs}
+                paymentMessageLogs={paymentMessageLogs}
+                onSaveAdminSecurity={saveAdminSecurityInCloud}
+                onSaveAdminSecurityLogs={saveAdminSecurityLogsInCloud}
+                onSaveProviderChangeLogs={saveProviderChangeLogsInCloud}
+                onSavePaymentMessageLog={savePaymentMessageLogInCloud}
+                smartCobrancaSettings={smartCobrancaSettings}
+                onSaveSmartCobrancaSettings={saveSmartCobrancaSettingsInCloud}
+                currentUser={currentUser}
+                pixKey={pixKey}
               />
             )}
           </motion.div>
@@ -962,7 +1222,7 @@ export default function App() {
 
       {/* Subtle footer */}
       <footer className="py-4 px-4 bg-[#eef3f0]/60 border-t border-gray-200/80 text-center text-[10px] text-gray-400 font-mono">
-        PDV UDV Cantina Segura • Sistema Integrado com Backup Automático na Nuvem • 2026
+        {TENANT_CONFIG.FOOTER_TEXT}
       </footer>
 
     </div>

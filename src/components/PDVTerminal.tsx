@@ -15,6 +15,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import BiometricsScanner from './BiometricsScanner';
 import { downloadReceiptAsPNG } from '../utils/receipt';
 import { generatePixPayload, getPixQRCodeUrl } from '../utils/pix';
+import { TENANT_CONFIG } from '../config/tenant';
 
 interface PDVTerminalProps {
   products: Product[];
@@ -23,7 +24,6 @@ interface PDVTerminalProps {
   onAddClient?: (client: Client) => void;
   triggerPushNotification: (title: string, body: string, type?: 'info' | 'success' | 'warn') => void;
   pixKey: string;
-  useStockControl?: boolean;
 }
 
 const PRODUCT_IMAGES: Record<string, string> = {
@@ -55,8 +55,7 @@ export default function PDVTerminal({
   onCompleteSale, 
   onAddClient,
   triggerPushNotification,
-  pixKey,
-  useStockControl = true
+  pixKey
 }: PDVTerminalProps) {
   
   // Core POS States
@@ -92,7 +91,30 @@ export default function PDVTerminal({
   const [newClientType, setNewClientType] = useState<'aluno' | 'colaborador'>('aluno');
   const [newClientLimit, setNewClientLimit] = useState('150.00');
 
+  // Prazo de Pagamento State (deadline for deferred purchase)
+  const [deadlineType, setDeadlineType] = useState<'7' | '15' | '30' | '45' | 'custom'>('15');
+  const [customDeadlineDate, setCustomDeadlineDate] = useState<string>(() => {
+    const d = new Date();
+    d.setDate(d.getDate() + 15);
+    return d.toISOString().split('T')[0];
+  });
+
   const categories = ['Todos', 'Salgados', 'Bebidas', 'Doces', 'Almoço', 'Outros'];
+
+  // Calculate due date based on chosen deadline type
+  const calculatedDueDate = useMemo(() => {
+    if (deadlineType === 'custom') {
+      return new Date(customDeadlineDate + 'T23:59:59');
+    }
+    const days = parseInt(deadlineType);
+    const d = new Date();
+    d.setDate(d.getDate() + days);
+    return d;
+  }, [deadlineType, customDeadlineDate]);
+
+  const formattedDueDateString = useMemo(() => {
+    return calculatedDueDate.toLocaleDateString('pt-BR');
+  }, [calculatedDueDate]);
 
   // Filter products
   const filteredProducts = useMemo(() => {
@@ -116,14 +138,14 @@ export default function PDVTerminal({
 
   // Add item to cart
   const addToCart = (product: Product) => {
-    if (useStockControl && product.stock <= 0) {
+    if (product.stock <= 0) {
       triggerPushNotification('Produto Esgotado', `"${product.name}" está temporariamente sem estoque.`, 'warn');
       return;
     }
 
     const existing = cart.find(item => item.product.id === product.id);
     if (existing) {
-      if (useStockControl && existing.quantity >= product.stock) {
+      if (existing.quantity >= product.stock) {
         triggerPushNotification('Estoque Limite', `Apenas ${product.stock} un disponíveis para "${product.name}".`, 'warn');
         return;
       }
@@ -146,7 +168,7 @@ export default function PDVTerminal({
     if (newQty <= 0) {
       setCart(cart.filter(i => i.product.id !== productId));
     } else {
-      if (useStockControl && delta > 0 && newQty > item.product.stock) {
+      if (delta > 0 && newQty > item.product.stock) {
         triggerPushNotification('Estoque Máximo', `Estoque máximo atingido para "${item.product.name}".`, 'warn');
         return;
       }
@@ -220,6 +242,25 @@ export default function PDVTerminal({
       });
     }
 
+    let txSaldoRestante: number | undefined = undefined;
+    let txStatus: 'concluido' | 'pendente' = 'concluido';
+
+    if (method === 'prazo' && selectedClient) {
+      const prevBal = selectedClient.balance;
+      if (prevBal >= 0) {
+        if (prevBal >= cartTotal) {
+          txSaldoRestante = undefined;
+          txStatus = 'concluido';
+        } else {
+          txSaldoRestante = cartTotal - prevBal;
+          txStatus = 'pendente';
+        }
+      } else {
+        txSaldoRestante = cartTotal;
+        txStatus = 'pendente';
+      }
+    }
+
     const tx: Transaction = {
       id: txId,
       clientId: selectedClient?.id,
@@ -228,12 +269,14 @@ export default function PDVTerminal({
         productId: item.product.id,
         productName: item.product.name,
         price: item.product.price,
-        quantity: item.quantity
+        quantity: item.quantity,
+        subtotal: item.product.price * item.quantity
       })),
       total: cartTotal,
       paymentMethod: method,
       timestamp: new Date().toISOString(),
-      status: 'concluido'
+      status: txStatus,
+      saldo_restante: txSaldoRestante
     };
 
     onCompleteSale(tx, updatedClients, updatedProducts);
@@ -278,6 +321,7 @@ export default function PDVTerminal({
     setCashReceived('');
     setCompletedTransaction(null);
     setShowQuickRegister(false);
+    setDeadlineType('15');
     setIsCartDrawerOpen(false);
   };
 
@@ -324,7 +368,7 @@ export default function PDVTerminal({
     const space = ' ';
     const breakLine = '\n';
     
-    let text = `🧾 *CANTINA UDV* 🧾\n`;
+    let text = `🧾 *${TENANT_CONFIG.COMPANY_NAME.toUpperCase()}* 🧾\n`;
     text += `---------------------------------\n`;
     text += `*Cliente:* ${client.name}\n`;
     text += `*Data:* ${new Date(tx.timestamp).toLocaleString('pt-BR')}\n`;
@@ -343,10 +387,12 @@ export default function PDVTerminal({
         text += `*Saldo Devedor Anterior:* R$ ${prevDebt.toFixed(2)}\n`;
       }
       const clientNewBalance = client.balance - tx.total;
+      text += `*Vencimento:* ${formattedDueDateString}\n`;
       text += `*Novo Saldo Devedor:* R$ ${Math.abs(clientNewBalance).toFixed(2)}\n`;
     }
     text += `---------------------------------\n\n`;
-    text += `Agradecemos a preferência! 🌙☀️🌟`;
+    text += `Agradecemos a preferência! 😊✨\n\n`;
+    text += `_(O recibo detalhado em formato de imagem PNG foi baixado no seu dispositivo. Você pode anexar a imagem junto a esta mensagem!)_`;
 
     return `https://api.whatsapp.com/send?phone=${client.phone.replace(/[^0-9]/g, '')}&text=${encodeURIComponent(text)}`;
   };
@@ -498,9 +544,9 @@ export default function PDVTerminal({
                 <div
                   key={product.id}
                   id={`product-card-${product.id}`}
-                  onClick={() => (product.stock > 0 || !useStockControl) && addToCart(product)}
+                  onClick={() => product.stock > 0 && addToCart(product)}
                   className={`group bg-white border rounded-3xl hover:shadow-md active:scale-[0.99] transition-all flex flex-col justify-between h-full relative cursor-pointer ${
-                    product.stock <= 0 && useStockControl
+                    product.stock <= 0 
                       ? 'opacity-60 bg-gray-50/50 cursor-not-allowed border-gray-150/70' 
                       : quantityInCart > 0 
                         ? 'border-[#1D4ED8] ring-2 ring-blue-600/20' 
@@ -516,38 +562,36 @@ export default function PDVTerminal({
 
                   {/* Stock Indicator Badge */}
                   <span className={`absolute top-3 left-3 z-10 px-2 py-0.5 rounded-lg text-[9px] font-mono font-bold ${
-                    product.stock <= 0 && useStockControl
+                    product.stock <= 0 
                       ? 'bg-red-50 text-red-600' 
-                      : (product.stock <= 0 ? 'bg-gray-100 text-gray-500' : (product.stock <= product.minStock && useStockControl
+                      : product.stock <= product.minStock 
                         ? 'bg-amber-50 text-amber-700 animate-pulse' 
-                        : 'bg-emerald-50 text-emerald-700'))
+                        : 'bg-emerald-50 text-emerald-700'
                   }`}>
-                    {product.stock <= 0 ? (useStockControl ? 'Esgotado' : 'Sem Est.') : `Est: ${product.stock}`}
+                    {product.stock <= 0 ? 'Esgotado' : `Est: ${product.stock}`}
                   </span>
 
                   {/* IMAGE TOP SECTION WITH OVERLAY - overflow-hidden here preserves rounded corners */}
-                  <div className="relative h-52 w-full bg-gray-100 overflow-hidden rounded-t-[22px] shrink-0">
+                  <div className="relative h-44 w-full bg-gray-100 overflow-hidden rounded-t-[22px] shrink-0">
                     <img 
                       src={getProductImage(product.id)} 
                       alt={product.name} 
-                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300 filter brightness-85 contrast-110"
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                       referrerPolicy="no-referrer"
                     />
-                    {/* Dark overlay to escurecer mais a foto */}
-                    <div className="absolute inset-0 bg-black/25 mix-blend-multiply pointer-events-none" />
                     {/* Category overlay label in blue matching mockup */}
-                    <span className="absolute top-3 right-3 bg-[#1D4ED8] text-white text-[10px] font-bold px-2.5 py-0.5 rounded-full shadow-sm z-10">
+                    <span className="absolute top-3 right-3 bg-[#1D4ED8] text-white text-[10px] font-bold px-2.5 py-0.5 rounded-full shadow-sm">
                       {getCategoryVisualLabel(product)}
                     </span>
                   </div>
 
                   {/* CARD BODY */}
-                  <div className="p-4 flex-1 flex flex-col justify-between">
+                  <div className="p-3.5 flex-1 flex flex-col justify-between">
                     <div>
-                      <h3 className="font-sans font-semibold text-gray-800 text-[15px] leading-snug line-clamp-2">
+                      <h3 className="font-sans font-medium text-gray-800 text-[14px] leading-snug line-clamp-2">
                         {product.name}
                       </h3>
-                      <p className="font-sans font-bold text-[#1D4ED8] text-[17px] mt-1.5">
+                      <p className="font-sans font-bold text-[#1D4ED8] text-[16px] mt-1.5">
                         R$ {product.price.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                       </p>
                     </div>
@@ -555,14 +599,14 @@ export default function PDVTerminal({
                     {/* ADICIONAR FULL WIDTH BLUE BUTTON (Visual only, container handles click) */}
                     <div
                       className={`mt-4 w-full py-2 px-4 font-sans text-[13px] font-semibold rounded-2xl transition-colors flex items-center justify-center gap-1 shadow-sm ${
-                        product.stock <= 0 && useStockControl
+                        product.stock <= 0 
                           ? 'bg-gray-200 text-gray-400' 
                           : quantityInCart > 0 
                             ? 'bg-emerald-600 text-white' 
                             : 'bg-[#1D4ED8] hover:bg-blue-800 text-white'
                       }`}
                     >
-                      {product.stock <= 0 && useStockControl ? 'Esgotado' : quantityInCart > 0 ? `Selecionado (${quantityInCart})` : 'Adicionar'}
+                      {product.stock <= 0 ? 'Esgotado' : quantityInCart > 0 ? `Selecionado (${quantityInCart})` : 'Adicionar'}
                     </div>
                   </div>
                 </div>
@@ -578,9 +622,9 @@ export default function PDVTerminal({
               return (
                 <div
                   key={product.id}
-                  onClick={() => (product.stock > 0 || !useStockControl) && addToCart(product)}
+                  onClick={() => product.stock > 0 && addToCart(product)}
                   className={`bg-white border p-3 rounded-2xl flex items-center justify-between gap-3 hover:shadow-sm transition-all cursor-pointer ${
-                    product.stock <= 0 && useStockControl
+                    product.stock <= 0 
                       ? 'opacity-60 cursor-not-allowed border-gray-150/70' 
                       : quantityInCart > 0 
                         ? 'border-[#1D4ED8] ring-2 ring-blue-600/20' 
@@ -588,15 +632,13 @@ export default function PDVTerminal({
                   }`}
                 >
                   <div className="flex items-center gap-3 flex-1 min-w-0">
-                    <div className="w-18 h-18 bg-gray-100 rounded-xl shrink-0 relative overflow-hidden">
+                    <div className="w-14 h-14 bg-gray-100 rounded-xl shrink-0 relative">
                       <img 
                         src={getProductImage(product.id)} 
                         alt={product.name} 
-                        className="w-full h-full object-cover rounded-xl filter brightness-85 contrast-110"
+                        className="w-full h-full object-cover rounded-xl"
                         referrerPolicy="no-referrer"
                       />
-                      {/* Dark overlay to escurecer mais a foto */}
-                      <div className="absolute inset-0 bg-black/25 mix-blend-multiply pointer-events-none" />
                       {/* Quantity Badge in List View - Floating Outside Thumbnail and Highly Salient */}
                       {quantityInCart > 0 && (
                         <div className="absolute -top-2 -right-2 z-20 bg-[#1D4ED8] text-white font-sans font-black text-xs w-6.5 h-6.5 rounded-full flex items-center justify-center shadow-md border-2 border-white animate-scale-in">
@@ -609,33 +651,30 @@ export default function PDVTerminal({
                         <span className="text-[9px] font-bold text-[#1D4ED8] bg-blue-50 px-2 py-0.5 rounded-full shrink-0">
                           {getCategoryVisualLabel(product)}
                         </span>
-                        {product.stock <= product.minStock && useStockControl && (
+                        {product.stock <= product.minStock && (
                           <span className="text-[9px] font-mono text-amber-600 font-bold">Est: {product.stock}</span>
                         )}
-                        {!useStockControl && (
-                          <span className="text-[9px] font-mono text-gray-500 font-bold">Est: {product.stock}</span>
-                        )}
                       </div>
-                      <h4 className="font-sans font-semibold text-gray-800 text-[15px] truncate mt-1">
+                      <h4 className="font-sans font-medium text-gray-800 text-sm truncate mt-1">
                         {product.name}
                       </h4>
                     </div>
                   </div>
 
                   <div className="flex items-center gap-3 shrink-0">
-                    <span className="font-sans font-bold text-[#1D4ED8] text-base">
+                    <span className="font-sans font-bold text-[#1D4ED8] text-sm">
                       R$ {product.price.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                     </span>
                     <div
                       className={`py-1.5 px-3 font-sans text-xs font-semibold rounded-xl transition-colors ${
-                        product.stock <= 0 && useStockControl
+                        product.stock <= 0 
                           ? 'bg-gray-200 text-gray-400' 
                           : quantityInCart > 0 
                             ? 'bg-emerald-600 text-white' 
                             : 'bg-[#1D4ED8] text-white'
                       }`}
                     >
-                      {product.stock <= 0 && useStockControl ? 'Esgotado' : quantityInCart > 0 ? `${quantityInCart}x` : '+ Add'}
+                      {product.stock <= 0 ? 'Esgotado' : quantityInCart > 0 ? `${quantityInCart}x` : '+ Add'}
                     </div>
                   </div>
                 </div>
@@ -1239,7 +1278,7 @@ export default function PDVTerminal({
                             <img
                               src={qrUrl}
                               alt="Pix QR Code"
-                              className="w-36 h-36 rounded-xl object-contain"
+                              className="w-28 h-28 rounded-xl object-contain"
                               referrerPolicy="no-referrer"
                             />
                           </div>
@@ -1296,13 +1335,13 @@ export default function PDVTerminal({
                     {/* 3. COMPRA A PRAZO BALANCE PREVIEW */}
                     {paymentMethod === 'prazo' && selectedClient && (
                       <div className="bg-amber-50/50 border border-amber-200 rounded-xl p-3 space-y-2 text-xs">
-                        <div className="flex justify-between text-gray-600">
-                          <span>Saldo Devedor Atual:</span>
-                          <span>R$ {selectedClient.balance < 0 ? Math.abs(selectedClient.balance).toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : '0,00'}</span>
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">Prazo de Pagamento:</span>
+                          <span className="font-bold text-amber-800">{deadlineType === 'custom' ? 'Personalizado' : `${deadlineType} Dias`}</span>
                         </div>
-                        <div className="flex justify-between text-gray-600">
-                          <span>Valor desta compra:</span>
-                          <span>R$ {cartTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">Vencimento da Fatura:</span>
+                          <span className="font-bold text-amber-800 underline">{formattedDueDateString}</span>
                         </div>
                         <div className="border-t border-amber-100 pt-2 flex justify-between font-bold text-red-600">
                           <span>Novo Saldo Devedor estimado:</span>
@@ -1460,7 +1499,7 @@ export default function PDVTerminal({
                         <img
                           src={qrUrl}
                           alt="Pix QR Code"
-                          className="w-56 h-56 object-contain mx-auto animate-pulse"
+                          className="w-40 h-40 object-contain mx-auto"
                           referrerPolicy="no-referrer"
                         />
                       </div>
@@ -1544,7 +1583,7 @@ export default function PDVTerminal({
                     {/* RECEIPT DESIGN */}
                     <div className="w-full bg-gray-50 border border-gray-150 rounded-2xl p-4 text-left font-mono text-xs text-gray-600 space-y-2 shadow-inner">
                       <div className="border-b border-dashed border-gray-200 pb-2 text-center">
-                        <h4 className="font-bold text-gray-800">CANTINA UDV SEGURA</h4>
+                        <h4 className="font-bold text-gray-800">{TENANT_CONFIG.COMPANY_NAME.toUpperCase()}</h4>
                         <p className="text-[10px] text-gray-400">Cupom de Venda • {new Date(completedTransaction.timestamp).toLocaleDateString('pt-BR')}</p>
                       </div>
 
@@ -1567,6 +1606,9 @@ export default function PDVTerminal({
                         {selectedClient && (
                           <>
                             <p><strong>Cliente:</strong> {selectedClient.name}</p>
+                            {completedTransaction.paymentMethod === 'prazo' && (
+                              <p className="text-amber-700 font-bold"><strong>Vencimento:</strong> {formattedDueDateString}</p>
+                            )}
                           </>
                         )}
                       </div>
@@ -1580,9 +1622,12 @@ export default function PDVTerminal({
                           extra.push(`Cliente: ${selectedClient.name}`);
                           extra.push(`WhatsApp: ${selectedClient.phone}`);
                         }
+                        if (completedTransaction.paymentMethod === 'prazo') {
+                          extra.push(`Vencimento: ${formattedDueDateString}`);
+                        }
                         
                         downloadReceiptAsPNG(
-                          'Cantina UDV',
+                          TENANT_CONFIG.SHORT_NAME,
                           'Cupom de Venda',
                           new Date(completedTransaction.timestamp).toLocaleString('pt-BR'),
                           completedTransaction.items.map(item => ({
@@ -1609,6 +1654,31 @@ export default function PDVTerminal({
                         <div className="flex gap-2">
                           <button
                             onClick={() => {
+                              const extra: string[] = [];
+                              if (selectedClient) {
+                                extra.push(`Cliente: ${selectedClient.name}`);
+                                extra.push(`WhatsApp: ${selectedClient.phone}`);
+                              }
+                              if (completedTransaction.paymentMethod === 'prazo') {
+                                extra.push(`Vencimento: ${formattedDueDateString}`);
+                              }
+                              
+                              downloadReceiptAsPNG(
+                                TENANT_CONFIG.SHORT_NAME,
+                                'Cupom de Venda',
+                                new Date(completedTransaction.timestamp).toLocaleString('pt-BR'),
+                                completedTransaction.items.map(item => ({
+                                  name: item.productName,
+                                  qty: item.quantity,
+                                  price: item.price
+                                })),
+                                completedTransaction.total,
+                                methodLabel(completedTransaction.paymentMethod),
+                                extra,
+                                `recibo_venda_${completedTransaction.id}.png`
+                              );
+                              triggerPushNotification('Baixando Recibo', 'O recibo PNG está sendo gerado e baixado.', 'success');
+
                               const link = getWhatsAppReceiptLink(completedTransaction, selectedClient);
                               window.open(link, '_blank');
                             }}
@@ -1618,7 +1688,7 @@ export default function PDVTerminal({
                           </button>
                           <button
                             onClick={() => {
-                              navigator.clipboard.writeText(`Venda R$ ${completedTransaction.total.toFixed(2)} - Cantina UDV`);
+                              navigator.clipboard.writeText(`Venda R$ ${completedTransaction.total.toFixed(2)} - ${TENANT_CONFIG.SHORT_NAME}`);
                               triggerPushNotification('Copiado!', 'Recibo copiado!', 'info');
                             }}
                             className="py-3 px-4 bg-white border border-gray-200 text-gray-700 font-sans text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 hover:bg-gray-50"

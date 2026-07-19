@@ -111,31 +111,93 @@
       },
       "required": ["id", "username", "name", "role", "passwordHash", "createdAt"]
     },
-    "company": {
-      "title": "Company",
-      "description": "Multi-tenant Company profile",
+    "smartCollection": {
+      "title": "SmartCollection",
+      "description": "Smart collection campaign or logs",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
-        "name": { "type": "string" },
-        "cnpj": { "type": "string" },
-        "logoUrl": { "type": "string" },
-        "subdomain": { "type": "string" },
-        "isActive": { "type": "boolean" },
-        "createdAt": { "type": "string" },
-        "settings": { "type": "object" }
+        "clienteId": { "type": "string" },
+        "clienteNome": { "type": "string" },
+        "valor": { "type": "number" },
+        "saldo": { "type": "number" },
+        "tipo": { "type": "string" },
+        "manual": { "type": "boolean" },
+        "automatica": { "type": "boolean" },
+        "mensagem": { "type": "string" },
+        "dataEnvio": { "type": "string" },
+        "proximoEnvio": { "type": "string" },
+        "ultimaCobranca": { "type": "string" },
+        "quantidadeEnviada": { "type": "number" },
+        "maximoCobrancas": { "type": "number" },
+        "intervalo": { "type": "string" },
+        "status": { "type": "string" },
+        "criadoEm": { "type": "string" },
+        "atualizadoEm": { "type": "string" }
       },
-      "required": ["id", "name", "isActive", "createdAt"]
+      "required": ["id", "clienteId", "clienteNome", "valor", "saldo", "status", "criadoEm", "atualizadoEm"]
+    },
+    "adminSecuritySettings": {
+      "title": "AdminSecuritySettings",
+      "description": "Admin security access and settings",
+      "type": "object",
+      "properties": {
+        "passwordHash": { "type": "string" },
+        "failedAttempts": { "type": "number" },
+        "blockedUntil": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["passwordHash", "failedAttempts", "updatedAt"]
+    },
+    "adminSecurityLog": {
+      "title": "AdminSecurityLog",
+      "description": "Log of admin security authentication attempts",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "user": { "type": "string" },
+        "action": { "type": "string" },
+        "date": { "type": "string" },
+        "success": { "type": "boolean" },
+        "details": { "type": "string" }
+      },
+      "required": ["id", "user", "action", "date", "success"]
+    },
+    "providerChangeLog": {
+      "title": "ProviderChangeLog",
+      "description": "Logs of payment provider changes",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "oldProvider": { "type": "string" },
+        "newProvider": { "type": "string" },
+        "user": { "type": "string" },
+        "date": { "type": "string" },
+        "status": { "type": "string" }
+      },
+      "required": ["id", "oldProvider", "newProvider", "user", "date", "status"]
+    },
+    "paymentMessageLog": {
+      "title": "PaymentMessageLog",
+      "description": "Logs of payment messages and manual billings",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "cliente": { "type": "string" },
+        "telefone": { "type": "string" },
+        "valor": { "type": "number" },
+        "usuario": { "type": "string" },
+        "data": { "type": "string" },
+        "hora": { "type": "string" },
+        "status": { "type": "string" }
+      },
+      "required": ["id", "cliente", "telefone", "valor", "usuario", "data", "hora", "status"]
     }
   },
   "firestore": {
     "users/{id}": {
       "schema": "appUser",
       "description": "Collection of system operators and administrators"
-    },
-    "companies/{id}": {
-      "schema": "company",
-      "description": "Collection of all registered companies (tenants)"
     },
     "products/{id}": {
       "schema": "product",
@@ -164,6 +226,14 @@
     "settings/{id}": {
       "schema": "setting",
       "description": "Configuration settings like active Pix key"
+    },
+    "smart_collections/{id}": {
+      "schema": "smartCollection",
+      "description": "Collection of intelligent collection entries and schedules"
+    },
+    "payment_message_log/{id}": {
+      "schema": "paymentMessageLog",
+      "description": "Logs of payment billing messages sent to customers"
     }
   }
 }

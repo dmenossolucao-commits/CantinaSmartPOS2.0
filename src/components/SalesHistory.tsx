@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { downloadReceiptAsPNG } from '../utils/receipt';
+import { TENANT_CONFIG } from '../config/tenant';
 
 interface SalesHistoryProps {
   transactions: Transaction[];
@@ -53,7 +54,7 @@ export default function SalesHistory({
     }));
 
     downloadReceiptAsPNG(
-      'CANTINA UDV SEGURA',
+      TENANT_CONFIG.COMPANY_NAME.toUpperCase(),
       `Recibo Venda #${tx.id.toUpperCase()}`,
       new Date(tx.timestamp).toLocaleString('pt-BR'),
       receiptItems,
@@ -278,7 +279,7 @@ export default function SalesHistory({
                 className="bg-gray-50 border border-gray-200 rounded-2xl p-4 font-mono text-[11px] text-gray-700 space-y-3 shadow-inner"
               >
                 <div className="text-center border-b border-dashed border-gray-300 pb-3">
-                  <h4 className="font-black text-xs text-gray-900 uppercase">CANTINA UDV SEGURA</h4>
+                  <h4 className="font-black text-xs text-gray-900 uppercase">{TENANT_CONFIG.COMPANY_NAME}</h4>
                   <p className="text-[9px] text-gray-400 mt-0.5">COMPROVANTE FISCAL SIMULADO</p>
                   <p className="text-[9px] text-gray-400 mt-0.5">#{selectedTx.id.toUpperCase()}</p>
                 </div>
@@ -307,7 +308,7 @@ export default function SalesHistory({
 
                 <div className="text-center text-[9px] text-gray-400 pt-3 border-t border-dashed border-gray-300">
                   <p>Obrigado pela preferência!</p>
-                  <p>UDV Cantina - Tecnologia Segura</p>
+                  <p>{TENANT_CONFIG.SHORT_NAME} - Tecnologia Segura</p>
                 </div>
               </div>
 

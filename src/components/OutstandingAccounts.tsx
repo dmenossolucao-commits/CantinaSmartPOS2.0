@@ -14,12 +14,14 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { downloadReceiptAsPNG } from '../utils/receipt';
 import { generatePixPayload, getPixQRCodeUrl } from '../utils/pix';
+import { generateOutstandingDebtorsPDF } from '../utils/pdfGenerator';
+import { TENANT_CONFIG } from '../config/tenant';
 
 interface OutstandingAccountsProps {
   clients: Client[];
   transactions: Transaction[];
   products: Product[];
-  onCompleteSale: (transaction: Transaction, updatedClients: Client[], updatedProducts: Product[]) => void;
+  onCompleteSale: (transaction: Transaction, updatedClients: Client[], updatedProducts: Product[], updatedTransactions?: Transaction[]) => void;
   triggerPushNotification: (title: string, body: string, type?: 'info' | 'success' | 'warn') => void;
   pixKey: string;
   onUpdatePixKey: (newKey: string) => void;
@@ -148,42 +150,71 @@ export default function OutstandingAccounts({
 
   // Generate highly polite collection text
   const generatePoliteBillingMessage = (client: Client) => {
-    const absBal = Math.abs(client.balance);
-    const clientTx = transactions.filter(t => t.clientId === client.id && t.paymentMethod === 'prazo' && t.status !== 'cancelado');
-    
+    // Filter only pending sales
+    const pendingTx = transactions
+      .filter(t => 
+        t.clientId === client.id && 
+        t.paymentMethod === 'prazo' && 
+        t.status === 'pendente'
+      )
+      .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()); // oldest first
+
+    const formatTxDate = (dateStr: string) => {
+      try {
+        const d = new Date(dateStr);
+        const day = String(d.getUTCDate()).padStart(2, '0');
+        const month = String(d.getUTCMonth() + 1).padStart(2, '0');
+        const year = d.getUTCFullYear();
+        return `${day}/${month}/${year}`;
+      } catch (e) {
+        return dateStr;
+      }
+    };
+
+    const fillDots = (left: string, right: string, targetLength: number = 38) => {
+      const currentLength = left.length + right.length;
+      if (currentLength >= targetLength) {
+        return `${left} ${right}`;
+      }
+      const dotsCount = targetLength - currentLength;
+      const dots = '.'.repeat(dotsCount);
+      return `${left} ${dots} ${right}`;
+    };
+
     let text = `Olá, *${client.name.split(' ')[0]}*! 😊\n\n`;
-    text += `Segue o detalhamento das compras pendentes na *Cantina UDV*:\n\n`;
-    
-    let txTotals = 0;
-    if (clientTx.length > 0) {
-      text += `*🛍️ Produtos Comprados:*\n`;
-      clientTx.forEach(tx => {
-        const dateStr = new Date(tx.timestamp).toLocaleDateString('pt-BR');
-        text += `• _${dateStr}_:\n`;
-        tx.items.forEach(item => {
-          text += `   - ${item.quantity}x ${item.productName} (R$ ${(item.price * item.quantity).toFixed(2)})\n`;
-        });
-        txTotals += tx.total;
+    text += `Seguem os produtos que permanecem em aberto:\n\n`;
+
+    let totalGeral = 0;
+
+    pendingTx.forEach(tx => {
+      const dateStr = formatTxDate(tx.timestamp);
+      text += `Compra ${dateStr}\n`;
+      tx.items.forEach(item => {
+        const unitPriceFormatted = item.price.toLocaleString('pt-BR', { minimumFractionDigits: 2 });
+        const subtotalFormatted = (item.price * item.quantity).toLocaleString('pt-BR', { minimumFractionDigits: 2 });
+        const leftStr = `${item.quantity} × ${item.productName} (un: R$ ${unitPriceFormatted})`;
+        const rightStr = `R$ ${subtotalFormatted}`;
+        text += `${fillDots(leftStr, rightStr)}\n`;
       });
-      text += `\n`;
-    }
-    
-    const prevDebt = absBal - txTotals;
-    if (prevDebt > 0.01) {
-      text += `*Saldo Devedor Anterior:* R$ ${prevDebt.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}\n`;
-      text += `*Valor das Compras Detalhadas:* R$ ${txTotals.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}\n`;
-    }
-    
-    text += `*💰 TOTAL DO SALDO DEVEDOR: R$ ${absBal.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}*\n\n`;
-    
+      const subtotalVal = tx.total;
+      const leftSub = 'Subtotal desta compra';
+      const rightSub = `R$ ${subtotalVal.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`;
+      text += `${fillDots(leftSub, rightSub)}\n\n`;
+
+      totalGeral += subtotalVal;
+    });
+
+    text += `--------------------------------\n`;
+    text += `TOTAL DO SALDO DEVEDOR: R$ ${totalGeral.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}\n\n`;
+
     text += `Favor enviar o comprovante após a transferência para registrarmos a baixa. Muito obrigado! 🙏✨\n\n`;
-    
+
     // Add Pix info at the absolute end, separated cleanly as requested
-    const payload = generatePixPayload(pixKey, absBal);
+    const payload = generatePixPayload(pixKey, totalGeral);
     text += `🔑 *Chave Pix:* ${pixKey}\n\n`;
     text += `Segue logo abaixo nosso Pix Copia e Cola:\n\n`;
     text += `${payload}`;
-    
+
     return text;
   };
 
@@ -221,22 +252,75 @@ export default function OutstandingAccounts({
       return;
     }
 
-    const currentDebt = Math.abs(selectedDebtor.balance);
-    const updatedClients = clients.map(c => {
-      if (c.id === selectedDebtor.id) {
-        return {
-          ...c,
-          balance: c.balance + amount // reduces debt
-        };
-      }
-      return c;
-    });
-
     const methodDesc = settlementMethod === 'crédito' 
       ? 'CARTÃO DE CRÉDITO' 
       : settlementMethod === 'débito' 
         ? 'CARTÃO DE DÉBITO' 
         : settlementMethod.toUpperCase();
+
+    // FIFO allocation to reduce transaction balances
+    const pendingTxList = transactions
+      .filter(t => 
+        t.clientId === selectedDebtor.id && 
+        t.paymentMethod === 'prazo' && 
+        t.status !== 'cancelado' &&
+        (t.status === 'pendente' || (t.saldo_restante !== undefined && t.saldo_restante > 0))
+      )
+      .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()); // oldest first
+
+    let paymentLeft = amount;
+    const updatedTransactions: Transaction[] = [];
+
+    pendingTxList.forEach(tx => {
+      if (paymentLeft <= 0.005) return;
+
+      const txTotal = tx.total;
+      const currentUnpaid = tx.saldo_restante !== undefined ? tx.saldo_restante : txTotal;
+
+      if (paymentLeft >= currentUnpaid - 0.005) {
+        // This transaction is now fully paid!
+        updatedTransactions.push({
+          ...tx,
+          saldo_restante: 0,
+          status: 'concluido'
+        });
+        paymentLeft -= currentUnpaid;
+      } else {
+        // This transaction is partially paid
+        updatedTransactions.push({
+          ...tx,
+          saldo_restante: currentUnpaid - paymentLeft,
+          status: 'pendente'
+        });
+        paymentLeft = 0;
+      }
+    });
+
+    // Calculate the exact new balance based entirely on remaining pending transactions
+    const remainingPendingTxList = transactions
+      .filter(t => t.clientId === selectedDebtor.id && t.paymentMethod === 'prazo' && t.status !== 'cancelado')
+      .map(t => {
+        const updated = updatedTransactions.find(ut => ut.id === t.id);
+        if (updated) return updated;
+        return t;
+      })
+      .filter(t => t.status === 'pendente');
+
+    const remainingDebt = remainingPendingTxList.reduce((sum, t) => {
+      return sum + (t.saldo_restante !== undefined ? t.saldo_restante : t.total);
+    }, 0);
+
+    const calculatedNewBalance = paymentLeft > 0 ? paymentLeft : -remainingDebt;
+
+    const updatedClients = clients.map(c => {
+      if (c.id === selectedDebtor.id) {
+        return {
+          ...c,
+          balance: calculatedNewBalance
+        };
+      }
+      return c;
+    });
 
     const tx: Transaction = {
       id: 'tx_rec_' + Math.random().toString(36).substring(2, 9),
@@ -247,7 +331,8 @@ export default function OutstandingAccounts({
           productId: 'settlement', 
           productName: `Acerto Parcial/Total de Conta a Prazo (${methodDesc})`, 
           price: amount, 
-          quantity: 1 
+          quantity: 1,
+          subtotal: amount
         }
       ],
       total: amount,
@@ -256,7 +341,7 @@ export default function OutstandingAccounts({
       status: 'concluido'
     };
 
-    onCompleteSale(tx, updatedClients, products);
+    onCompleteSale(tx, updatedClients, products, updatedTransactions);
     
     triggerPushNotification(
       'Baixa Registrada!',
@@ -313,10 +398,22 @@ export default function OutstandingAccounts({
             <button
               type="button"
               onClick={() => {
+                generateOutstandingDebtorsPDF(clients, transactions);
+                triggerPushNotification('Relatório Gerado', 'O relatório de devedores a prazo foi baixado em PDF com sucesso.', 'success');
+              }}
+              className="px-3.5 py-2 border border-emerald-200 hover:border-emerald-500 bg-emerald-50/25 hover:bg-emerald-50 text-emerald-800 font-sans text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 transition-all shadow-sm cursor-pointer"
+            >
+              <Download size={14} className="text-emerald-600" />
+              Baixar Relatório PDF
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
                 setShowPixConfig(!showPixConfig);
                 setTempPixKey(pixKey);
               }}
-              className="px-3.5 py-2 border border-gray-200 hover:border-blue-500 bg-white hover:bg-blue-50/10 text-gray-750 font-sans text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 transition-all shadow-sm"
+              className="px-3.5 py-2 border border-gray-200 hover:border-blue-500 bg-white hover:bg-blue-50/10 text-gray-750 font-sans text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 transition-all shadow-sm cursor-pointer"
             >
               <Settings size={14} className="text-gray-500" />
               Chave Pix Cantina
@@ -335,7 +432,7 @@ export default function OutstandingAccounts({
                 <div className="p-4 border border-blue-100 bg-blue-50/10 rounded-xl space-y-3 mt-1 shadow-inner">
                   <div className="flex justify-between items-center">
                     <h4 className="text-xs font-bold text-blue-900 flex items-center gap-1">
-                      <Settings size={14} /> Chave Pix da Cantina UDV
+                      <Settings size={14} /> Chave Pix da {TENANT_CONFIG.SHORT_NAME}
                     </h4>
                     <span className="text-[9px] bg-blue-100 text-blue-800 font-bold px-2 py-0.5 rounded-full uppercase">Configuração</span>
                   </div>
@@ -343,7 +440,7 @@ export default function OutstandingAccounts({
                   <div className="flex gap-2">
                     <input
                       type="text"
-                      placeholder="Ex: pix@udvcantina.com ou celular/CNPJ"
+                      placeholder={`Ex: pix@${TENANT_CONFIG.SHORT_NAME.toLowerCase().replace(/ /g, '')}.com ou celular/CNPJ`}
                       value={tempPixKey}
                       onChange={(e) => setTempPixKey(e.target.value)}
                       className="flex-1 px-3 py-1.5 bg-white border border-gray-200 focus:border-blue-500 rounded-lg text-xs font-sans focus:outline-none focus:ring-1 focus:ring-blue-500"
@@ -759,7 +856,7 @@ export default function OutstandingAccounts({
                       <img
                         src={getPixQRCodeUrl(generatePixPayload(pixKey, Math.abs(billingModalClient.balance)))}
                         alt="Pix Cobrança QR Code"
-                        className="w-36 h-36 object-contain mx-auto"
+                        className="w-24 h-24 object-contain mx-auto"
                         referrerPolicy="no-referrer"
                       />
                     </div>
@@ -851,7 +948,7 @@ export default function OutstandingAccounts({
                     })));
 
                     downloadReceiptAsPNG(
-                      'Cantina UDV',
+                      TENANT_CONFIG.SHORT_NAME,
                       'Nota de Cobrança',
                       new Date().toLocaleString('pt-BR'),
                       itemsToDraw,

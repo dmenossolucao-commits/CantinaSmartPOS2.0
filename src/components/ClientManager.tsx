@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { downloadReceiptAsPNG } from '../utils/receipt';
+import { TENANT_CONFIG } from '../config/tenant';
 
 interface ClientManagerProps {
   clients: Client[];
@@ -220,7 +221,7 @@ export default function ClientManager({
     
     // Find up to 5 recent unpaid/prazo transactions for this client to list the items bought
     const recentPrazoTxs = transactions
-      .filter(t => t.clientId === client.id && t.paymentMethod === 'prazo' && t.status !== 'cancelado')
+      .filter(t => t.clientId === client.id && t.paymentMethod === 'prazo' && t.status === 'pendente')
       .slice(0, 5);
       
     let itemsText = '';
@@ -234,13 +235,13 @@ export default function ClientManager({
     }
 
     const text = `Olá, ${client.name.split(' ')[0]}!\n\n` +
-      `Segue o extrato pendente da sua conta na *Cantina UDV*:\n` +
+      `Segue o extrato pendente da sua conta na *${TENANT_CONFIG.SHORT_NAME}*:\n` +
       `---------------------------------\n` +
       `*Saldo Devedor:* R$ ${debtAmt}\n` +
       `---------------------------------\n` +
       (itemsText ? itemsText + `---------------------------------\n` : '') +
-      `Chave Pix: *pix@udvcantina.com*\n\n` +
-      `Por favor, envie o comprovante de pagamento por aqui. Obrigado! 😊`;
+      `Chave Pix: *${TENANT_CONFIG.EMAIL}*\n\n` +
+      `_(O extrato detalhado em formato de imagem PNG foi gerado no seu dispositivo. Por favor, envie o comprovante por aqui. Obrigado! 😊)_`;
 
     return `https://api.whatsapp.com/send?phone=${client.phone.replace(/[^0-9]/g, '')}&text=${encodeURIComponent(text)}`;
   };
@@ -453,6 +454,28 @@ export default function ClientManager({
                   <button
                     id={`whatsapp-charge-btn-${activeClient.id}`}
                     onClick={() => {
+                      const recentTxs = clientTransactions.filter(tx => tx.paymentMethod === 'prazo');
+                      const itemsToDraw = recentTxs.flatMap(tx => tx.items.map(item => ({
+                        name: item.productName,
+                        qty: item.quantity,
+                        price: item.price
+                      })));
+
+                      downloadReceiptAsPNG(
+                        TENANT_CONFIG.SHORT_NAME,
+                        'Extrato de Débito',
+                        new Date().toLocaleString('pt-BR'),
+                        itemsToDraw,
+                        Math.abs(activeClient.balance),
+                        'Prazo (Carteira)',
+                        [
+                          `Cliente: ${activeClient.name}`,
+                          `Chave Pix: ${TENANT_CONFIG.EMAIL}`,
+                          `Status: Saldo Pendente`
+                        ],
+                        `extrato_${activeClient.id}.png`
+                      );
+
                       const link = getWhatsAppBillingLink(activeClient);
                       window.open(link, '_blank');
                     }}
@@ -470,7 +493,7 @@ export default function ClientManager({
                       })));
 
                       downloadReceiptAsPNG(
-                        'Cantina UDV',
+                        TENANT_CONFIG.SHORT_NAME,
                         'Extrato de Débito',
                         new Date().toLocaleString('pt-BR'),
                         itemsToDraw,
@@ -478,7 +501,7 @@ export default function ClientManager({
                         'Prazo (Carteira)',
                         [
                           `Cliente: ${activeClient.name}`,
-                          `Chave Pix: pix@udvcantina.com`,
+                          `Chave Pix: ${TENANT_CONFIG.EMAIL}`,
                           `Status: Saldo Pendente`
                         ],
                         `extrato_${activeClient.id}.png`
@@ -588,7 +611,7 @@ export default function ClientManager({
                           <button
                             onClick={() => {
                               downloadReceiptAsPNG(
-                                'Cantina UDV',
+                                TENANT_CONFIG.SHORT_NAME,
                                 'Cupom de Venda',
                                 new Date(tx.timestamp).toLocaleString('pt-BR'),
                                 tx.items.map(i => ({ name: i.productName, qty: i.quantity, price: i.price })),

@@ -1,12 +1,6 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Global safety net (default deny)
-    match /{document=**} {
-      allow read, write: if false;
-    }
-
-    // Top-level collections
     match /products/{document} {
       allow read, write: if true;
     }
@@ -28,41 +22,17 @@ service cloud.firestore {
     match /settings/{document} {
       allow read, write: if true;
     }
+    match /smart_collections/{document} {
+      allow read, write: if true;
+    }
+    match /payment_message_log/{document} {
+      allow read, write: if true;
+    }
     match /users/{document} {
       allow read, write: if true;
     }
-    match /companies/{document} {
+    match /test_connection/{document} {
       allow read, write: if true;
-    }
-
-    // Subcollections under companies for hierarchical strategy
-    match /companies/{companyId} {
-      allow read, write: if true;
-
-      match /products/{document} {
-        allow read, write: if true;
-      }
-      match /clients/{document} {
-        allow read, write: if true;
-      }
-      match /transactions/{document} {
-        allow read, write: if true;
-      }
-      match /backups/{document} {
-        allow read, write: if true;
-      }
-      match /tickets/{document} {
-        allow read, write: if true;
-      }
-      match /notifications/{document} {
-        allow read, write: if true;
-      }
-      match /settings/{document} {
-        allow read, write: if true;
-      }
-      match /users/{document} {
-        allow read, write: if true;
-      }
     }
   }
 }
