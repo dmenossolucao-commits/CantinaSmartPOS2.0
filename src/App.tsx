@@ -14,6 +14,7 @@ import {
   INITIAL_PRODUCTS, INITIAL_CLIENTS, INITIAL_TRANSACTIONS, INITIAL_BACKUPS, INITIAL_SUPPORT 
 } from './data';
 import PDVTerminal from './components/PDVTerminal';
+import PixAvulso from './components/PixAvulso';
 import ClientManager from './components/ClientManager';
 import ProductManager from './components/ProductManager';
 import DashboardView from './components/DashboardView';
@@ -27,13 +28,14 @@ import SmartFinanceiroPIX from './components/SmartFinanceiroPIX';
 import { ProviderConfig } from './providers/payments/ProviderRegistry';
 import { 
   ShoppingCart, Users, Package, TrendingUp, Smartphone, 
-  CheckCircle, AlertCircle, CalendarClock, History, LogOut, Shield, Sparkles, DollarSign
+  CheckCircle, AlertCircle, CalendarClock, History, LogOut, Shield, Sparkles, DollarSign,
+  QrCode
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 // Import Firebase config & Firestore handlers
 import { db } from './lib/firebase';
-import { collection, doc, onSnapshot } from 'firebase/firestore';
+import { collection, doc, onSnapshot, setDoc } from 'firebase/firestore';
 import { 
   checkAndPopulateInitialData,
   saveProductInCloud,
@@ -75,7 +77,7 @@ import { TENANT_CONFIG } from './config/tenant';
 const ENABLE_SMART_FINANCEIRO = false;
 const ENABLE_SMART_COBRANCA = false;
 
-type ActiveTab = 'pdv' | 'clientes' | 'prazo' | 'historico' | 'cardapio' | 'admin' | 'mobile' | 'usuarios' | 'smartcobranca' | 'financeiro';
+type ActiveTab = 'pdv' | 'pix_avulso' | 'clientes' | 'prazo' | 'historico' | 'cardapio' | 'admin' | 'mobile' | 'usuarios' | 'smartcobranca' | 'financeiro';
 
 interface PushAlert {
   id: string;
@@ -123,6 +125,7 @@ export default function App() {
   const [tickets, setTickets] = useState<SupportTicket[]>([]);
   const [notifications, setNotifications] = useState<NotificationLog[]>([]);
   const [pixKey, setPixKey] = useState<string>('pix@udvcantina.com');
+  const [useStockControl, setUseStockControl] = useState<boolean>(true);
   
   // Smart Cobrança States
   const [smartCollections, setSmartCollections] = useState<SmartCollection[]>([]);
@@ -252,7 +255,15 @@ export default function App() {
 
         const unsubProducts = onSnapshot(collection(db, 'products'), (snap) => {
           const list: Product[] = [];
-          snap.forEach(doc => list.push(doc.data() as Product));
+          snap.forEach(doc => {
+            const data = doc.data();
+            list.push({
+              ...data,
+              price: typeof data.price === 'number' ? data.price : Number(data.price || 0),
+              stock: typeof data.stock === 'number' ? data.stock : Number(data.stock || 0),
+              minStock: typeof data.minStock === 'number' ? data.minStock : Number(data.minStock || 0),
+            } as Product);
+          });
           setProducts(list);
           if (loadedCount < totalCollections) checkLoadingHydration();
         }, (err) => {
@@ -262,7 +273,14 @@ export default function App() {
 
         const unsubClients = onSnapshot(collection(db, 'clients'), (snap) => {
           const list: Client[] = [];
-          snap.forEach(doc => list.push(doc.data() as Client));
+          snap.forEach(doc => {
+            const data = doc.data();
+            list.push({
+              ...data,
+              balance: typeof data.balance === 'number' ? data.balance : Number(data.balance || 0),
+              creditLimit: typeof data.creditLimit === 'number' ? data.creditLimit : Number(data.creditLimit || 0),
+            } as Client);
+          });
           setRawClients(list);
           if (loadedCount < totalCollections) checkLoadingHydration();
         }, (err) => {
@@ -272,7 +290,22 @@ export default function App() {
 
         const unsubTransactions = onSnapshot(collection(db, 'transactions'), (snap) => {
           const list: Transaction[] = [];
-          snap.forEach(doc => list.push(doc.data() as Transaction));
+          snap.forEach(doc => {
+            const data = doc.data();
+            list.push({
+              ...data,
+              total: typeof data.total === 'number' ? data.total : Number(data.total || 0),
+              saldo_restante: data.saldo_restante !== undefined 
+                ? (typeof data.saldo_restante === 'number' ? data.saldo_restante : Number(data.saldo_restante || 0))
+                : undefined,
+              items: Array.isArray(data.items) ? data.items.map((item: any) => ({
+                ...item,
+                price: typeof item.price === 'number' ? item.price : Number(item.price || 0),
+                quantity: typeof item.quantity === 'number' ? item.quantity : Number(item.quantity || 0),
+                subtotal: typeof item.subtotal === 'number' ? item.subtotal : Number(item.subtotal || 0),
+              })) : []
+            } as Transaction);
+          });
           list.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
           setTransactions(list);
           if (loadedCount < totalCollections) checkLoadingHydration();
@@ -321,6 +354,16 @@ export default function App() {
           if (loadedCount < totalCollections) checkLoadingHydration();
         }, (err) => {
           console.error('Error syncing settings:', err);
+          if (loadedCount < totalCollections) checkLoadingHydration();
+        });
+
+        const unsubGeneral = onSnapshot(doc(db, 'settings', 'general'), (snap) => {
+          if (snap.exists() && snap.data().useStockControl !== undefined) {
+            setUseStockControl(snap.data().useStockControl);
+          }
+          if (loadedCount < totalCollections) checkLoadingHydration();
+        }, (err) => {
+          console.error('Error syncing general settings:', err);
           if (loadedCount < totalCollections) checkLoadingHydration();
         });
 
@@ -510,6 +553,7 @@ export default function App() {
           unsubTickets();
           unsubNotifications();
           unsubPix();
+          unsubGeneral();
           unsubSmartCollections();
           unsubSmartSettings();
           unsubPaymentProviders();
@@ -664,6 +708,22 @@ export default function App() {
       triggerPushNotification('Cadastro Excluído', 'O cliente foi removido com sucesso.', 'warn');
     } catch (err) {
       console.error(err);
+    }
+  };
+
+  const handleToggleStockControl = async (enabled: boolean) => {
+    setUseStockControl(enabled);
+    if (db) {
+      try {
+        await setDoc(doc(db, 'settings', 'general'), { useStockControl: enabled }, { merge: true });
+        triggerPushNotification(
+          enabled ? 'Estoque Ativado' : 'Estoque Desativado',
+          enabled ? 'O controle de estoque agora é obrigatório no caixa.' : 'As vendas agora podem ser realizadas sem limite de estoque.',
+          enabled ? 'success' : 'warn'
+        );
+      } catch (err) {
+        console.error('Error saving general settings:', err);
+      }
     }
   };
 
@@ -913,6 +973,17 @@ export default function App() {
               <ShoppingCart size={14} className={activeTab === 'pdv' ? 'text-amber-300' : ''} /> PDV Caixa
             </button>
             <button
+              id="nav-tab-pix-avulso"
+              onClick={() => setActiveTab('pix_avulso')}
+              className={`py-2 px-3.5 rounded-xl font-sans text-xs font-bold flex items-center gap-2 transition-all shrink-0 ${
+                activeTab === 'pix_avulso' 
+                  ? 'bg-gradient-to-r from-emerald-500 to-teal-600 text-white shadow-lg shadow-emerald-500/20 scale-102 border-b-2 border-emerald-300/30' 
+                  : 'text-emerald-100/70 hover:text-white hover:bg-white/5'
+              }`}
+            >
+              <QrCode size={14} className={activeTab === 'pix_avulso' ? 'text-amber-300' : ''} /> PIX Avulso
+            </button>
+            <button
               id="nav-tab-clientes"
               onClick={() => setActiveTab('clientes')}
               className={`py-2 px-3.5 rounded-xl font-sans text-xs font-bold flex items-center gap-2 transition-all shrink-0 ${
@@ -1047,6 +1118,15 @@ export default function App() {
                 onAddClient={handleAddClient}
                 triggerPushNotification={triggerPushNotification}
                 pixKey={pixKey}
+                useStockControl={useStockControl}
+                onToggleStockControl={handleToggleStockControl}
+              />
+            )}
+
+            {activeTab === 'pix_avulso' && (
+              <PixAvulso
+                pixKey={pixKey}
+                triggerPushNotification={triggerPushNotification}
               />
             )}
 
@@ -1114,6 +1194,7 @@ export default function App() {
                 onUpdateProduct={handleUpdateProduct}
                 onDeleteProduct={handleDeleteProduct}
                 onZeroStock={handleZeroStock}
+                useStockControl={useStockControl}
               />
             )}
 
